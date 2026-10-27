@@ -1,0 +1,20 @@
+[package]
+name = "nautik9-app"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "NautiK9 integrated mobile and desktop application runtime"
+
+[dependencies]
+nautik9-core = { path = "../nautik9-core" }
+nautik9-wayfinder = { path = "../nautik9-wayfinder" }
+nautik9-lemonade = { path = "../nautik9-lemonade" }
+nautik9-fleet = { path = "../nautik9-fleet" }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { version = "4", features = ["derive"] }
