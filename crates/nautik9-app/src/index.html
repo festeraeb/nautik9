@@ -1083,7 +1083,7 @@
                 <span class="card-badge" id="totBudgetBadge">Budget: 12 Calls</span>
             </div>
             <p style="font-size:0.84rem;color:var(--text-sub);margin-bottom:12px;">
-                Multi-branch hypothesis generator with strict automated verifier check scoring (0 simulations).
+                Planned, not built yet. Earlier versions showed a fixed template with made-up verifier results; this now reports that honestly.
             </p>
             <div class="input-group">
                 <input type="text" id="totProblem" value="Survey Thunder Bay Corridor" placeholder="Enter high-level objective..." onkeydown="if(event.key==='Enter') runToT()">
@@ -1091,7 +1091,7 @@
             </div>
             <div id="totTreeContainer" class="tot-tree">
                 <div style="font-size:0.84rem;color:var(--text-sub);text-align:center;padding:12px;">
-                    Tap <strong>Reason</strong> above to dispatch the Verifier Swarm.
+                    Not implemented yet.
                 </div>
             </div>
             <div id="totWinningPlanContainer"></div>
@@ -1336,7 +1336,7 @@
             playHaptic();
             const container = document.getElementById('totTreeContainer');
             const planContainer = document.getElementById('totWinningPlanContainer');
-            container.innerHTML = '<div style="font-size:0.85rem;color:#38bdf8;padding:12px;text-align:center;">Evaluating Verifier Swarm branches across 3 hypotheses...</div>';
+            container.innerHTML = '<div style="font-size:0.85rem;color:#38bdf8;padding:12px;text-align:center;">Asking the server...</div>';
             planContainer.innerHTML = '';
 
             try {
@@ -1347,6 +1347,10 @@
                 });
                 const data = await res.json();
                 container.innerHTML = '';
+                if (!res.ok || !data.nodes) {
+                    container.innerHTML = '<div style="font-size:0.85rem;color:var(--rose);padding:12px;">' + esc(data.error || 'Reasoner failed') + '</div>';
+                    return;
+                }
 
                 data.nodes.forEach(node => {
                     const el = document.createElement('div');

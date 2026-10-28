@@ -810,6 +810,7 @@ async fn handle_decompose(
     let steps = nautik9_wayfinder::decompose_task(task);
     axum::Json(serde_json::json!({
         "task": task,
+        "kind": "fixed checklist, not model-generated",
         "steps": steps
     }))
 }
@@ -898,25 +899,18 @@ async fn handle_delete_note(
     axum::Json(serde_json::json!({ "success": ok, "id": id }))
 }
 
-async fn handle_tot(
-    axum::extract::State(state): axum::extract::State<AppState>,
-    axum::Json(payload): axum::Json<serde_json::Value>,
-) -> axum::Json<serde_json::Value> {
-    let problem = payload["problem"].as_str().unwrap_or("Survey anomaly verification");
-    let budget = payload["budget"].as_u64().unwrap_or(12) as usize;
-
-    let tot = nautik9_wayfinder::run_tree_of_thoughts(problem, budget);
-
-    {
-        let reg_guard = state.registry.lock().await;
-        let mut avatar = reg_guard.context.avatar.write().await;
-        avatar.transition_to(
-            nautik9_core::avatar::MackState::Sniffing,
-            format!("ToT Reasoner: evaluated {} nodes for '{}'", tot.nodes.len(), problem),
-        );
-    }
-
-    axum::Json(serde_json::to_value(tot).unwrap_or_default())
+/// Tree-of-thought reasoning is not implemented. The old endpoint returned a fixed
+/// template with invented verifier results, so it now says so instead.
+async fn handle_tot() -> axum::response::Response {
+    use axum::response::IntoResponse;
+    (
+        axum::http::StatusCode::NOT_IMPLEMENTED,
+        axum::Json(serde_json::json!({
+            "ok": false,
+            "error": "Tree-of-thought reasoning is not implemented yet (planned). Use Chat for a model answer."
+        })),
+    )
+        .into_response()
 }
 
 async fn handle_avatar_action(
@@ -1109,6 +1103,16 @@ mod tests {
         assert_eq!(t["tags"][0]["tag"], "sonar");
         let (_, n) = call(&a, "GET", "/api/notes?tag=sonar", Some(TOKEN), None).await;
         assert_eq!(n["count"], 1);
+    }
+
+    #[tokio::test]
+    async fn tot_is_not_faked() {
+        let d = tempfile::tempdir().unwrap();
+        let a = app(d.path());
+        let (s, v) = call(&a, "POST", "/api/tot", Some(TOKEN), Some(serde_json::json!({"problem":"x"}))).await;
+        assert_eq!(s, StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(v["ok"], false);
+        assert!(v.get("nodes").is_none());
     }
 
     #[test]

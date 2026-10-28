@@ -469,7 +469,7 @@ pub fn generate_fast_embedding(text: &str, dim: usize) -> Vec<f32> {
     vec
 }
 
-/// Task Decomposer: breaks high-level goals into 8 actionable field / code steps
+/// A FIXED 8-step checklist with the task name filled in. It does not read the task or call a model.
 pub fn decompose_task(task_description: &str) -> Vec<String> {
     vec![
         format!("1. Define objective & constraints for '{}'", task_description),
@@ -481,123 +481,6 @@ pub fn decompose_task(task_description: &str) -> Vec<String> {
         "7. Update Mack companion avatar status & post mission log to vault".to_string(),
         "8. Sync telemetry to CesarOps Fleet or trigger offline persistence".to_string(),
     ]
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ThoughtNode {
-    pub id: String,
-    pub parent_id: Option<String>,
-    pub label: String,
-    pub hypothesis: String,
-    pub score: f32,
-    pub status: String, // "exploring", "verified", "pruned", "promoted"
-    pub verifier_checks: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TreeOfThoughtsResult {
-    pub problem: String,
-    pub budget_used: usize,
-    pub max_budget: usize,
-    pub winning_branch_id: String,
-    pub winning_plan: Vec<String>,
-    pub nodes: Vec<ThoughtNode>,
-}
-
-/// Tree of Thoughts (ToT) reasoning harness with verifier scoring and branch pruning
-pub fn run_tree_of_thoughts(problem: &str, max_budget: usize) -> TreeOfThoughtsResult {
-    let budget = max_budget.min(20).max(4);
-
-    let root = ThoughtNode {
-        id: "node-root".to_string(),
-        parent_id: None,
-        label: "Problem Root".to_string(),
-        hypothesis: problem.to_string(),
-        score: 1.0,
-        status: "verified".to_string(),
-        verifier_checks: vec![
-            "Goal formulated & parsed".to_string(),
-            "Constraint: No synthetic fallbacks / simulations".to_string(),
-        ],
-    };
-
-    let branch_a = ThoughtNode {
-        id: "node-A".to_string(),
-        parent_id: Some("node-root".to_string()),
-        label: "Branch A: Direct Sequential".to_string(),
-        hypothesis: format!("Execute '{}' sequentially in a single pass without verification guards.", problem),
-        score: 0.58,
-        status: "pruned".to_string(),
-        verifier_checks: vec![
-            "Syntax Check: PASS".to_string(),
-            "Error Recovery Guard: FAIL (no rollback)".to_string(),
-            "Hardware Budget: PASS".to_string(),
-        ],
-    };
-
-    let branch_b = ThoughtNode {
-        id: "node-B".to_string(),
-        parent_id: Some("node-root".to_string()),
-        label: "Branch B: Multi-Tier Verifier Swarm".to_string(),
-        hypothesis: format!("Decompose '{}' into verifiable checkpoints with automated ground-truth verifiers.", problem),
-        score: 0.95,
-        status: "promoted".to_string(),
-        verifier_checks: vec![
-            "Wayfinder Vault Citation: PASS (95% match)".to_string(),
-            "Dual-Mode Bridge Check: PASS (local Qwen2.5 / remote cluster)".to_string(),
-            "Hardware Feasibility: PASS (S25 Ultra Snapdragon 8 Elite)".to_string(),
-        ],
-    };
-
-    let branch_c = ThoughtNode {
-        id: "node-C".to_string(),
-        parent_id: Some("node-root".to_string()),
-        label: "Branch C: Speculative Parallel".to_string(),
-        hypothesis: format!("Speculatively evaluate exploratory paths for '{}' with unconstrained generation.", problem),
-        score: 0.69,
-        status: "pruned".to_string(),
-        verifier_checks: vec![
-            "Exploration Breadth: PASS".to_string(),
-            "Deterministic Repeatability: FAIL (variance > 0.4)".to_string(),
-            "Strict Ground Truth: PASS".to_string(),
-        ],
-    };
-
-    let b_step1 = ThoughtNode {
-        id: "node-B1".to_string(),
-        parent_id: Some("node-B".to_string()),
-        label: "Phase 1: Pre-flight Audit".to_string(),
-        hypothesis: "Probe hardware profile and ingest context from Wayfinder vault.".to_string(),
-        score: 0.97,
-        status: "promoted".to_string(),
-        verifier_checks: vec!["Vault lookup verified".to_string(), "Telemetry link green".to_string()],
-    };
-
-    let b_step2 = ThoughtNode {
-        id: "node-B2".to_string(),
-        parent_id: Some("node-B".to_string()),
-        label: "Phase 2: Verifier Gating".to_string(),
-        hypothesis: "Execute core logic with automated verification checks before state commit.".to_string(),
-        score: 0.94,
-        status: "promoted".to_string(),
-        verifier_checks: vec!["Unit test & contract verified".to_string(), "Strict no-sim check passed".to_string()],
-    };
-
-    let winning_plan = vec![
-        format!("1. Pre-flight Telemetry: Inspect hardware profile and Wayfinder vault for '{}'", problem),
-        "2. Multi-Candidate Synthesis: Generate and score 3 distinct implementation branches".to_string(),
-        "3. Verifier Audit: Filter branches through strict validation (0 simulations, verified citations)".to_string(),
-        "4. Commitment & Rollout: Promote Branch B and dispatch execution to Lemonade engine".to_string(),
-    ];
-
-    TreeOfThoughtsResult {
-        problem: problem.to_string(),
-        budget_used: (budget / 2).max(4),
-        max_budget: budget,
-        winning_branch_id: "node-B".to_string(),
-        winning_plan,
-        nodes: vec![root, branch_a, branch_b, branch_c, b_step1, b_step2],
-    }
 }
 
 /// The Wayfinder NautiK9 Module
