@@ -1,4 +1,4 @@
-use nautik9_core::sms::{SmsMessage, SmsStatus};
+use nautik9_core::sms::{composer_opened_message, SmsMessage, SmsStatus};
 use chrono::{Local, TimeZone};
 
 /// Detects the active ADB connected device ID
@@ -112,6 +112,7 @@ pub fn parse_adb_sms_rows(text: &str, limit: usize) -> Vec<SmsMessage> {
             body: body_val.to_string(),
             timestamp: timestamp_str,
             draft_reply: None,
+            draft_error: None,
             status: SmsStatus::Pending,
             reply_model: None,
             latency_ms: None,
@@ -121,7 +122,8 @@ pub fn parse_adb_sms_rows(text: &str, limit: usize) -> Vec<SmsMessage> {
     messages
 }
 
-/// Dispatches an SMS reply to the Android device using standard SENDTO intent
+/// Opens the phone's SMS composer with the reply filled in (SENDTO intent).
+/// Nothing is sent: the user still has to press send on the phone.
 pub async fn dispatch_sms_to_phone(sender: &str, body: &str) -> Result<String, String> {
     let dev = get_active_adb_device().await
         .ok_or_else(|| "No ADB device connected to dispatch SMS".to_string())?;
@@ -145,7 +147,7 @@ pub async fn dispatch_sms_to_phone(sender: &str, body: &str) -> Result<String, S
         .map_err(|e| format!("Failed to invoke Android SMS intent: {}", e))?;
 
     if output.status.success() {
-        Ok(format!("Dispatched to S25 Ultra SMS Engine for recipient {}", clean_target))
+        Ok(composer_opened_message(&clean_target))
     } else {
         let err = String::from_utf8_lossy(&output.stderr);
         Err(format!("Android intent dispatch failed: {}", err))

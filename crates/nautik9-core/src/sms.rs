@@ -20,6 +20,9 @@ pub struct SmsMessage {
     pub body: String,
     pub timestamp: String,
     pub draft_reply: Option<String>,
+    /// Why there is no draft (set with status NoModel).
+    #[serde(default)]
+    pub draft_error: Option<String>,
     pub status: SmsStatus,
     pub reply_model: Option<String>,
     pub latency_ms: Option<u64>,

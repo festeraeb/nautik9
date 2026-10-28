@@ -13,6 +13,7 @@ use nautik9_fleet::{FleetConfig, FleetModule};
 use nautik9_lemonade::{LemonadeConfig, LemonadeModule};
 use nautik9_wayfinder::{generate_fast_embedding, WayfinderModule, WayfinderVault};
 
+mod auth;
 mod device_sms;
 
 #[derive(Parser, Debug)]
@@ -25,6 +26,10 @@ struct Cli {
     /// Path to local SQLite vault database
     #[arg(long, default_value = "vault.db")]
     vault_path: PathBuf,
+
+    /// Config directory (token, providers.json, workmode.json). Default ~/.config/nautik9
+    #[arg(long)]
+    config_dir: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -40,9 +45,10 @@ enum Commands {
         #[arg(short, long, default_value_t = 5)]
         top_k: usize,
     },
-    /// Ask Lemonade dual-mode reasoning engine (online cluster or local offline fallback)
+    /// Ask the configured model endpoints (first one that answers wins; errors if none do)
     Chat {
         prompt: String,
+        /// Only use endpoints marked "offline": true in providers.json
         #[arg(long)]
         offline: bool,
     },
@@ -64,6 +70,15 @@ enum Commands {
     Serve {
         #[arg(short, long, default_value_t = 8340)]
         port: u16,
+        /// Address to bind. 0.0.0.0 (default) lets the phone on the LAN reach it; use 127.0.0.1 for this machine only.
+        #[arg(long, default_value = "0.0.0.0")]
+        bind: String,
+        /// Fleet aggregator whose /api/fleet/nodes the Fleet tab reports
+        #[arg(long, default_value = "http://127.0.0.1:9122")]
+        fleet_url: String,
+        /// Print the access URL including the token (otherwise only done on a terminal)
+        #[arg(long)]
+        print_token: bool,
     },
 }
 
@@ -137,8 +152,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Device Profile:    {}", hardware.device_name);
     println!("Hardware Tier:     {:?}", hardware.tier);
     println!("RAM / Cores:       {} MB / {} cores", hardware.ram_mb, hardware.cpu_cores);
-    println!("SVE2 / Hexagon:    SVE2: {} | NPU: {}", hardware.has_armv9_sve2, hardware.has_hexagon_npu);
-    println!("Recommended Model: {} ({})", hardware.recommended_llm_model, hardware.recommended_quantization);
+    println!("SVE2 / Hexagon:    SVE2: {} | NPU: {} (from the --device hint, not probed)", hardware.has_armv9_sve2, hardware.has_hexagon_npu);
+    println!("Model hint:        {} ({}) - a suggestion for this device class, not what runs", hardware.recommended_llm_model, hardware.recommended_quantization);
     if let Some(ref ver) = hardware.one_ui_version {
         println!("Samsung One UI:    v{} (Galaxy AI integration enabled)", ver);
     }
@@ -155,8 +170,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let wayfinder_mod = Box::new(WayfinderModule::new(vault, hardware.recommended_embedding_dim));
     registry.register(wayfinder_mod).await?;
 
-    // Initialize Lemonade
-    let lemonade_mod = Box::new(LemonadeModule::new(LemonadeConfig::default()));
+    // Initialize Lemonade (provider chain from <config dir>/providers.json, else defaults)
+    let config_dir = cli.config_dir.clone().unwrap_or_else(auth::default_config_dir);
+    let lemonade_config = LemonadeConfig::load(&config_dir.join("providers.json"))?;
+    let lemonade_mod = Box::new(LemonadeModule::new(lemonade_config.clone()));
     registry.register(lemonade_mod).await?;
 
     // Initialize Fleet Bridge
@@ -198,7 +215,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Mack Avatar Reaction: [{:?}] {}", avatar.current_state, avatar.status_message);
         }
         Commands::Chat { prompt, offline } => {
-            println!("💬 Asking Lemonade (Mode: {})...", if offline { "Offline Local" } else { "Dynamic Dual-Mode" });
+            println!("Asking the model chain ({})...", if offline { "offline endpoints only" } else { "all endpoints in order" });
             let chat_event = NautikEvent::new(
                 "cli",
                 EventPayload::LemonadeChatRequest {
@@ -234,8 +251,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Interactive => {
             println!("Interactive mode: Mack is on watch. Type your request or 'exit'.");
         }
-        Commands::Serve { port } => {
-            serve_mobile_web(port, registry, cli.vault_path).await?;
+        Commands::Serve { port, bind, fleet_url, print_token } => {
+            let opts = ServeOptions { port, bind, fleet_url, print_token, config_dir, lemonade_config };
+            serve_mobile_web(opts, registry, cli.vault_path).await?;
             return Ok(());
         }
     }
@@ -251,50 +269,152 @@ struct AppState {
     vault_path: PathBuf,
     sms_messages: std::sync::Arc<tokio::sync::RwLock<Vec<SmsMessage>>>,
     work_config: std::sync::Arc<tokio::sync::RwLock<WorkModeConfig>>,
+    lemonade: std::sync::Arc<LemonadeModule>,
+    fleet_url: String,
+}
+
+struct ServeOptions {
+    port: u16,
+    bind: String,
+    fleet_url: String,
+    print_token: bool,
+    config_dir: PathBuf,
+    lemonade_config: LemonadeConfig,
+}
+
+fn build_router(state: AppState, token: String) -> axum::Router {
+    use axum::{routing::{get, post}, Router};
+    Router::new()
+        .route("/", get(handle_index))
+        .route("/assets/mack.jpg", get(handle_asset_mack))
+        .route("/api/health", get(handle_health))
+        .route("/api/status", get(handle_status))
+        .route("/api/providers", get(handle_providers))
+        .route("/api/search", post(handle_search))
+        .route("/api/chat", post(handle_chat))
+        .route("/api/decompose", post(handle_decompose))
+        .route("/api/notes", get(handle_get_notes).post(handle_save_note))
+        .route("/api/notes/{id}", axum::routing::delete(handle_delete_note))
+        .route("/api/notes/{id}/backlinks", get(handle_backlinks))
+        .route("/api/tags", get(handle_tags))
+        .route("/api/tot", post(handle_tot))
+        .route("/api/fleet/status", get(handle_fleet_status))
+        .route("/api/avatar/action", post(handle_avatar_action))
+        .route("/api/sms/inbox", get(handle_sms_inbox))
+        .route("/api/sms/workmode", post(handle_sms_workmode))
+        .route("/api/sms/incoming", post(handle_sms_incoming))
+        .route("/api/sms/action", post(handle_sms_action))
+        .layer(axum::middleware::from_fn_with_state(
+            std::sync::Arc::new(token),
+            auth::require_token,
+        ))
+        .with_state(state)
+}
+
+/// Best-effort LAN address of this machine (no packet is sent).
+fn lan_ip() -> Option<String> {
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.connect("192.0.2.1:9").ok()?;
+    Some(sock.local_addr().ok()?.ip().to_string())
+}
+
+/// Fill in the draft on `msg`, or mark it NoModel. Never invents a reply.
+/// Texts from other people get no vault notes; only the owner's own numbers do.
+async fn apply_draft(
+    msg: &mut SmsMessage,
+    lemonade: &LemonadeModule,
+    cfg: &WorkModeConfig,
+    vault_path: &std::path::Path,
+    embedding_dim: usize,
+) {
+    let is_owner = cfg.is_owner(&msg.sender);
+    let vault_context = if is_owner {
+        match WayfinderVault::new(vault_path) {
+            Ok(v) => {
+                let q_emb = generate_fast_embedding(&msg.body, embedding_dim);
+                let hits = v.search(&msg.body, Some(&q_emb), 3).await.unwrap_or_default();
+                if hits.is_empty() {
+                    None
+                } else {
+                    Some(hits.iter().map(|h| format!("- {}: {}", h.title, h.snippet)).collect::<Vec<_>>().join("\n"))
+                }
+            }
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    let req = nautik9_lemonade::SmsDraftRequest {
+        owner_name: &cfg.owner_name,
+        instructions: &cfg.custom_instructions,
+        sender: &msg.sender,
+        body: &msg.body,
+        is_owner,
+        vault_context: vault_context.as_deref(),
+    };
+    let offline_only = cfg.model_target == "offline";
+    let started = std::time::Instant::now();
+    match lemonade.draft_sms_reply(&req, offline_only).await {
+        Ok(a) => {
+            msg.draft_reply = Some(a.reply.clone());
+            msg.reply_model = Some(a.label());
+            msg.latency_ms = Some(a.duration_ms);
+            msg.draft_error = None;
+            msg.status = SmsStatus::Drafted;
+        }
+        Err(f) => {
+            msg.draft_reply = None;
+            msg.reply_model = None;
+            msg.latency_ms = Some(started.elapsed().as_millis() as u64);
+            msg.draft_error = Some(format!("{}: {}", f.error, f.attempts.join("; ")));
+            msg.status = SmsStatus::NoModel;
+        }
+    }
+}
+
+/// With auto_reply on, open the composer for a fresh draft. Nothing is sent.
+async fn maybe_open_composer(msg: &mut SmsMessage, cfg: &WorkModeConfig) {
+    if cfg.auto_reply && msg.status == SmsStatus::Drafted {
+        if let Some(d) = msg.draft_reply.clone() {
+            if device_sms::dispatch_sms_to_phone(&msg.sender, &d).await.is_ok() {
+                msg.status = SmsStatus::OpenedInComposer;
+            }
+        }
+    }
 }
 
 async fn serve_mobile_web(
-    port: u16,
+    opts: ServeOptions,
     registry: ModuleRegistry,
     vault_path: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use axum::{routing::{get, post}, Router};
-
     let hardware = registry.context.hardware.clone();
 
-    // Read real raw SMS messages directly from physical S25 Ultra over ADB
+    let (token, token_created) = auth::load_or_create_token(&opts.config_dir.join("token"))?;
+    let work_config = WorkModeConfig::load(&opts.config_dir.join("workmode.json"))?;
+    let lemonade = std::sync::Arc::new(LemonadeModule::new(opts.lemonade_config.clone()));
+
+    // Read the phone inbox over ADB. Counts only are printed, never contents.
     let mut initial_sms = match device_sms::fetch_real_device_sms(5).await {
         Ok(msgs) => {
-            println!("📥 S25 Ultra Real SMS: Retrieved {} genuine incoming messages from content://sms/inbox", msgs.len());
+            println!("Phone inbox: read {} message(s) over adb", msgs.len());
             msgs
         }
         Err(e) => {
-            println!("⚠️ S25 Ultra Real SMS: No synthetic data. Device connection status: {}", e);
+            println!("Phone inbox: unavailable ({})", e);
             Vec::new()
         }
     };
 
-    let work_config = WorkModeConfig::default();
-
-    // If Work Mode is active and real messages exist, generate real initial drafts using Lemonade Dual-P100
     if work_config.enabled && !initial_sms.is_empty() {
-        println!("🧠 Lemonade Engine: Drafting responses for real incoming SMS via dual Tesla P100s...");
-        let mut lemonade = LemonadeModule::new(LemonadeConfig::default());
+        println!("Drafting replies through the configured model chain...");
         for msg in initial_sms.iter_mut() {
-            let (draft, model, dur) = lemonade.draft_sms_reply(
-                &msg.sender,
-                &msg.body,
-                &work_config.custom_instructions,
-                &work_config.model_target,
-            ).await;
-            msg.draft_reply = Some(draft);
-            msg.reply_model = Some(model);
-            msg.latency_ms = Some(dur);
-            msg.status = if work_config.auto_reply {
-                SmsStatus::AutoSent
-            } else {
-                SmsStatus::Drafted
-            };
+            apply_draft(msg, &lemonade, &work_config, &vault_path, hardware.recommended_embedding_dim).await;
+            maybe_open_composer(msg, &work_config).await;
+        }
+        let none = initial_sms.iter().filter(|m| m.status == SmsStatus::NoModel).count();
+        if none > 0 {
+            println!("  {} message(s) have no draft: no model endpoint answered", none);
         }
     }
 
@@ -304,37 +424,32 @@ async fn serve_mobile_web(
         vault_path,
         sms_messages: std::sync::Arc::new(tokio::sync::RwLock::new(initial_sms)),
         work_config: std::sync::Arc::new(tokio::sync::RwLock::new(work_config)),
+        lemonade,
+        fleet_url: opts.fleet_url.clone(),
     };
 
-    let app = Router::new()
-        .route("/", get(handle_index))
-        .route("/assets/mack.jpg", get(handle_asset_mack))
-        .route("/api/status", get(handle_status))
-        .route("/api/search", post(handle_search))
-        .route("/api/chat", post(handle_chat))
-        .route("/api/decompose", post(handle_decompose))
-        .route("/api/notes", get(handle_get_notes).post(handle_save_note))
-        .route("/api/notes/{id}", axum::routing::delete(handle_delete_note))
-        .route("/api/tot", post(handle_tot))
-        .route("/api/fleet/status", get(handle_fleet_status))
-        .route("/api/avatar/action", post(handle_avatar_action))
-        .route("/api/sms/inbox", get(handle_sms_inbox))
-        .route("/api/sms/workmode", post(handle_sms_workmode))
-        .route("/api/sms/incoming", post(handle_sms_incoming))
-        .route("/api/sms/action", post(handle_sms_action))
-        .with_state(state);
+    let app = build_router(state, token.clone());
 
-    let addr = format!("0.0.0.0:{}", port);
+    let addr = format!("{}:{}", opts.bind, opts.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
     println!("=======================================================");
-    println!("🚀 NautiK9 Mobile Companion Server is LIVE (Axum RFC Engine)!");
+    println!("NautiK9 companion server listening on {}", addr);
+    println!("  Local:  http://127.0.0.1:{}", opts.port);
+    let lan = if opts.bind == "0.0.0.0" { lan_ip() } else { None };
+    if let Some(ip) = &lan {
+        println!("  LAN:    http://{}:{}", ip, opts.port);
+    }
+    println!("  Token:  {} ({})", opts.config_dir.join("token").display(), if token_created { "created now" } else { "existing" });
+    if opts.print_token || std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+        let host = lan.unwrap_or_else(|| "127.0.0.1".to_string());
+        println!("  Open once: http://{}:{}/?token={}", host, opts.port, token);
+    } else {
+        println!("  (token URL not printed to a log; read the token file or start with --print-token)");
+    }
+    println!("  WARNING: plain HTTP. The token and your data cross the network unencrypted.");
+    println!("  Keep this on a trusted LAN or VPN; never port-forward it to the internet.");
     println!("=======================================================");
-    println!("  📱 Phone Link / Android URL:  http://127.0.0.1:{}", port);
-    println!("  🔒 Sovereign Mesh (Tailscale): http://127.0.0.1:{}", port);
-    println!("  💻 Host Local:                http://127.0.0.1:{}", port);
-    println!("=======================================================");
-    println!("Open this URL on your phone or in Phone Link browser window.\n");
 
     axum::serve(listener, app).await?;
     Ok(())
@@ -342,6 +457,27 @@ async fn serve_mobile_web(
 
 async fn handle_index() -> axum::response::Html<&'static str> {
     axum::response::Html(get_mobile_html())
+}
+
+async fn handle_health() -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({ "ok": true, "service": "nautik9", "auth": "bearer token required for /api/*" }))
+}
+
+async fn handle_providers(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> axum::Json<serde_json::Value> {
+    // API keys are never returned.
+    let list: Vec<_> = state
+        .lemonade
+        .config
+        .providers
+        .iter()
+        .map(|p| serde_json::json!({
+            "name": p.name, "base_url": p.base_url, "model": p.model, "offline": p.offline,
+            "has_api_key": p.api_key.as_deref().map(|k| !k.is_empty()).unwrap_or(false),
+        }))
+        .collect();
+    axum::Json(serde_json::json!({ "providers": list }))
 }
 
 async fn handle_asset_mack() -> axum::response::Response {
@@ -359,6 +495,8 @@ async fn handle_status(
     let reg_guard = state.registry.lock().await;
     let avatar = reg_guard.context.avatar.read().await;
     axum::Json(serde_json::json!({
+        // These come from the --device hint, not from probing hardware.
+        "profile_source": "device-hint",
         "device": state.hardware.device_name,
         "tier": format!("{:?}", state.hardware.tier),
         "ram_mb": state.hardware.ram_mb,
@@ -401,29 +539,46 @@ async fn handle_search(
 
     axum::Json(serde_json::json!({
         "query": q,
+        "mode": "keyword",
         "hits": results.len(),
         "results": results
     }))
 }
 
 async fn handle_chat(
+    axum::extract::State(state): axum::extract::State<AppState>,
     axum::Json(payload): axum::Json<serde_json::Value>,
-) -> axum::Json<serde_json::Value> {
+) -> axum::response::Response {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
     let prompt = payload["prompt"].as_str().unwrap_or("Status report");
     let offline = payload["offline"].as_bool().unwrap_or(false);
-    let target = if offline { "offline" } else { "strongest" };
 
-    let mut lemonade = LemonadeModule::new(LemonadeConfig::default());
-    let (reply, model_used, duration_ms) = lemonade
-        .generate_routed(prompt, Some("You are Mack, the sovereign NautiK9 survey dog."), target)
-        .await;
-
-    axum::Json(serde_json::json!({
-        "response": reply,
-        "offline": offline,
-        "model_used": model_used,
-        "duration_ms": duration_ms
-    }))
+    match state
+        .lemonade
+        .chat(prompt, Some("You are Mack, the NautiK9 survey companion."), offline)
+        .await
+    {
+        Ok(a) => axum::Json(serde_json::json!({
+            "response": a.reply,
+            "offline": offline,
+            "model_used": a.label(),
+            "model": a.model,
+            "provider": a.provider,
+            "endpoint": a.endpoint,
+            "duration_ms": a.duration_ms
+        }))
+        .into_response(),
+        Err(f) => (
+            StatusCode::BAD_GATEWAY,
+            axum::Json(serde_json::json!({
+                "ok": false,
+                "error": f.error,
+                "attempts": f.attempts
+            })),
+        )
+            .into_response(),
+    }
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -437,36 +592,13 @@ async fn handle_sms_inbox(
 ) -> axum::Json<serde_json::Value> {
     if query.sync.unwrap_or(false) {
         if let Ok(real_messages) = device_sms::fetch_real_device_sms(5).await {
-            let work_cfg = {
-                let r = state.work_config.read().await;
-                r.clone()
-            };
+            let work_cfg = state.work_config.read().await.clone();
             let mut list = state.sms_messages.write().await;
-            let mut lemonade = LemonadeModule::new(LemonadeConfig::default());
-
             for mut real_msg in real_messages {
                 if !list.iter().any(|m| m.id == real_msg.id) {
                     if work_cfg.enabled {
-                        let (draft, model, dur) = lemonade.draft_sms_reply(
-                            &real_msg.sender,
-                            &real_msg.body,
-                            &work_cfg.custom_instructions,
-                            &work_cfg.model_target,
-                        ).await;
-                        real_msg.draft_reply = Some(draft);
-                        real_msg.reply_model = Some(model);
-                        real_msg.latency_ms = Some(dur);
-                        real_msg.status = if work_cfg.auto_reply {
-                            SmsStatus::AutoSent
-                        } else {
-                            SmsStatus::Drafted
-                        };
-
-                        if work_cfg.auto_reply {
-                            if let Some(ref d) = real_msg.draft_reply {
-                                let _ = device_sms::dispatch_sms_to_phone(&real_msg.sender, d).await;
-                            }
-                        }
+                        apply_draft(&mut real_msg, &state.lemonade, &work_cfg, &state.vault_path, state.hardware.recommended_embedding_dim).await;
+                        maybe_open_composer(&mut real_msg, &work_cfg).await;
                     }
                     list.insert(0, real_msg);
                 }
@@ -474,14 +606,8 @@ async fn handle_sms_inbox(
         }
     }
 
-    let messages = {
-        let list = state.sms_messages.read().await;
-        list.clone()
-    };
-    let work_cfg = {
-        let cfg = state.work_config.read().await;
-        cfg.clone()
-    };
+    let messages = state.sms_messages.read().await.clone();
+    let work_cfg = state.work_config.read().await.clone();
     axum::Json(serde_json::json!({
         "messages": messages,
         "work_config": work_cfg
@@ -508,6 +634,12 @@ async fn handle_sms_workmode(
     if let Some(target) = payload["model_target"].as_str() {
         cfg.model_target = target.to_string();
     }
+    if let Some(name) = payload["owner_name"].as_str().map(str::trim).filter(|n| !n.is_empty()) {
+        cfg.owner_name = name.to_string();
+    }
+    if let Some(nums) = payload["owner_numbers"].as_array() {
+        cfg.owner_numbers = nums.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
+    }
 
     {
         let reg_guard = state.registry.lock().await;
@@ -515,7 +647,7 @@ async fn handle_sms_workmode(
         if cfg.enabled {
             avatar.transition_to(
                 nautik9_core::avatar::MackState::Attentive,
-                format!("Work Mode ARMED (Auto-Reply: {})", if cfg.auto_reply { "AUTO" } else { "APPROVAL" }),
+                format!("Work Mode ARMED (auto-open composer: {})", if cfg.auto_reply { "ON" } else { "OFF, approval needed" }),
             );
         } else {
             avatar.transition_to(
@@ -535,69 +667,42 @@ async fn handle_sms_incoming(
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::Json(payload): axum::Json<serde_json::Value>,
 ) -> axum::Json<serde_json::Value> {
-    let sender = payload["sender"].as_str().unwrap_or("Dispatch Contact").to_string();
+    let sender = payload["sender"].as_str().unwrap_or("Unknown sender").to_string();
     let body = payload["body"].as_str().unwrap_or("").to_string();
     let msg_id = format!("sms-{}", &uuid::Uuid::new_v4().to_string()[..8]);
     let now = chrono::Local::now().format("%I:%M %p").to_string();
 
-    let work_cfg = {
-        let r = state.work_config.read().await;
-        r.clone()
+    let work_cfg = state.work_config.read().await.clone();
+
+    let mut new_msg = SmsMessage {
+        id: msg_id,
+        sender,
+        body,
+        timestamp: now,
+        draft_reply: None,
+        draft_error: None,
+        status: SmsStatus::Pending,
+        reply_model: None,
+        latency_ms: None,
     };
 
-    let mut draft_reply = None;
-    let mut reply_model = None;
-    let mut latency_ms = None;
-    let status;
-
     if work_cfg.enabled {
-        let mut lemonade = LemonadeModule::new(LemonadeConfig::default());
-        let (draft, model, dur) = lemonade.draft_sms_reply(
-            &sender,
-            &body,
-            &work_cfg.custom_instructions,
-            &work_cfg.model_target,
-        ).await;
+        apply_draft(&mut new_msg, &state.lemonade, &work_cfg, &state.vault_path, state.hardware.recommended_embedding_dim).await;
+        maybe_open_composer(&mut new_msg, &work_cfg).await;
 
-        draft_reply = Some(draft);
-        reply_model = Some(model);
-        latency_ms = Some(dur);
-
-        if work_cfg.auto_reply {
-            status = SmsStatus::AutoSent;
-            if let Some(ref d) = draft_reply {
-                let _ = device_sms::dispatch_sms_to_phone(&sender, d).await;
-            }
-        } else {
-            status = SmsStatus::Drafted;
-        }
-
-        // Trigger Mack avatar transition
         let reg_guard = state.registry.lock().await;
         let mut avatar = reg_guard.context.avatar.write().await;
         avatar.transition_to(
             nautik9_core::avatar::MackState::TargetLocked,
-            format!("Mack drafted auto-reply for SMS from {}", sender),
+            if new_msg.status == SmsStatus::NoModel {
+                "Incoming text logged; no model answered, no draft".to_string()
+            } else {
+                "Mack drafted a reply for an incoming text".to_string()
+            },
         );
-    } else {
-        status = SmsStatus::Pending;
     }
 
-    let new_msg = SmsMessage {
-        id: msg_id.clone(),
-        sender,
-        body,
-        timestamp: now,
-        draft_reply,
-        status,
-        reply_model,
-        latency_ms,
-    };
-
-    {
-        let mut list = state.sms_messages.write().await;
-        list.insert(0, new_msg.clone());
-    }
+    state.sms_messages.write().await.insert(0, new_msg.clone());
 
     axum::Json(serde_json::json!({
         "success": true,
@@ -613,6 +718,7 @@ async fn handle_sms_action(
     let id = payload["id"].as_str().unwrap_or("");
     let action = payload["action"].as_str().unwrap_or("approve");
     let edited_draft = payload["edited_draft"].as_str().map(|s| s.to_string());
+    let work_cfg = state.work_config.read().await.clone();
 
     let mut list = state.sms_messages.write().await;
     let mut updated_msg = None;
@@ -626,33 +732,19 @@ async fn handle_sms_action(
             match action {
                 "approve" => {
                     msg.status = SmsStatus::Approved;
-                    if let Some(ref draft_text) = msg.draft_reply {
-                        match device_sms::dispatch_sms_to_phone(&msg.sender, draft_text).await {
+                    match msg.draft_reply.clone().filter(|d| !d.trim().is_empty()) {
+                        Some(draft_text) => match device_sms::dispatch_sms_to_phone(&msg.sender, &draft_text).await {
                             Ok(res) => {
+                                msg.status = SmsStatus::OpenedInComposer;
                                 dispatch_result = Some(res);
                             }
-                            Err(e) => {
-                                dispatch_result = Some(format!("Blocker/Error: {}", e));
-                            }
-                        }
+                            Err(e) => dispatch_result = Some(format!("Error: {}", e)),
+                        },
+                        None => dispatch_result = Some("Error: there is no draft to open".to_string()),
                     }
                 }
                 "regenerate" => {
-                    let work_cfg = {
-                        let r = state.work_config.read().await;
-                        r.clone()
-                    };
-                    let mut lemonade = LemonadeModule::new(LemonadeConfig::default());
-                    let (draft, model, dur) = lemonade.draft_sms_reply(
-                        &msg.sender,
-                        &msg.body,
-                        &work_cfg.custom_instructions,
-                        &work_cfg.model_target,
-                    ).await;
-                    msg.draft_reply = Some(draft);
-                    msg.reply_model = Some(model);
-                    msg.latency_ms = Some(dur);
-                    msg.status = SmsStatus::Drafted;
+                    apply_draft(msg, &state.lemonade, &work_cfg, &state.vault_path, state.hardware.recommended_embedding_dim).await;
                 }
                 "ignore" => {
                     msg.status = SmsStatus::Ignored;
@@ -671,51 +763,44 @@ async fn handle_sms_action(
     }))
 }
 
-async fn handle_fleet_status() -> axum::Json<serde_json::Value> {
+/// Report the aggregator's real answer, or the real error. Nothing is invented.
+async fn fleet_status_value(fleet_url: &str) -> Result<serde_json::Value, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(1500))
         .build()
         .unwrap_or_default();
-
-    let fleet_data = match client.get("http://127.0.0.1:9122/api/fleet/nodes").send().await {
-        Ok(resp) if resp.status().is_success() => {
-            resp.json::<serde_json::Value>().await.ok()
+    let url = format!("{}/api/fleet/nodes", fleet_url.trim_end_matches('/'));
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("fleet aggregator {} unreachable: {}", fleet_url, if e.is_timeout() { "timed out".to_string() } else if e.is_connect() { "connection refused".to_string() } else { e.to_string() }))?;
+    if !resp.status().is_success() {
+        return Err(format!("fleet aggregator {} answered HTTP {}", fleet_url, resp.status().as_u16()));
+    }
+    let mut v: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("fleet aggregator {} sent unreadable JSON: {}", fleet_url, e))?;
+    match v.as_object_mut() {
+        Some(o) => {
+            o.insert("ok".into(), serde_json::json!(true));
+            o.insert("source".into(), serde_json::json!(url));
+            Ok(v)
         }
-        _ => None,
-    };
+        None => Ok(serde_json::json!({ "ok": true, "source": url, "data": v })),
+    }
+}
 
-    let (nodes, summary) = if let Some(fd) = fleet_data {
-        (fd["nodes"].clone(), fd["summary"].clone())
-    } else {
-        (serde_json::json!([
-            { "name": "t440", "gpus": 2, "os": "Linux 24.04 Ubuntu", "reachable": true, "url": "http://127.0.0.1:9121", "age_secs": 0 },
-            { "name": "cesarops2", "gpus": 3, "os": "Linux 4.0.5 Omarchy", "reachable": true, "url": "http://127.0.0.1:19221", "age_secs": 0 },
-            { "name": "cesarops3", "gpus": 3, "os": "Linux 4.0.4 Omarchy", "reachable": true, "url": "http://127.0.0.1:19222", "age_secs": 0 },
-            { "name": "cesarops4om", "gpus": 5, "os": "Linux 4.0.4 Omarchy", "reachable": true, "url": "http://127.0.0.1:19223", "age_secs": 0 },
-            { "name": "nautik9-laptop", "gpus": 2, "os": "Windows 11 Pro", "reachable": true, "url": "http://127.0.0.1:9121", "age_secs": 0 },
-            { "name": "dell-touchscreen", "gpus": 1, "os": "Windows 11 Home", "reachable": true, "url": "http://127.0.0.1:9121", "age_secs": 0 }
-        ]), serde_json::json!({
-            "nodes_total": 6,
-            "nodes_reachable": 6,
-            "gpus_total": 16,
-            "gpus_busy": 13,
-            "vram_total_bytes": 213385447424u64,
-            "vram_used_bytes": 120893108224u64,
-            "max_temp_c": 69.0
-        }))
-    };
-
-    axum::Json(serde_json::json!({
-        "cluster": "Amway Blitz Sovereign Swarm",
-        "nodes": nodes,
-        "summary": summary,
-        "active_routers": {
-            "lemonade_gpu": "http://127.0.0.1:8001/v1 (Qwen3-VL-4B Instruct - Fast Dual-P100)",
-            "paddler_swarm": "http://127.0.0.1:8080/v1 (KatCoder-35B / Flint-40B / DeepSeek-V4.1)",
-            "lemonade_core": "http://127.0.0.1:13305/v1 (Qwen3-14B-GGUF)",
-            "fleet_aggregator": "http://127.0.0.1:9122 (Authoritative 6-Node Mesh)"
-        }
-    }))
+async fn handle_fleet_status(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> axum::response::Response {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    match fleet_status_value(&state.fleet_url).await {
+        Ok(v) => axum::Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, axum::Json(serde_json::json!({ "ok": false, "error": e }))).into_response(),
+    }
 }
 
 async fn handle_decompose(
@@ -729,15 +814,51 @@ async fn handle_decompose(
     }))
 }
 
+#[derive(serde::Deserialize, Default)]
+struct NotesQuery {
+    tag: Option<String>,
+}
+
+fn open_vault(state: &AppState) -> WayfinderVault {
+    WayfinderVault::new(&state.vault_path).unwrap_or_else(|_| WayfinderVault::in_memory().unwrap())
+}
+
 async fn handle_get_notes(
     axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<NotesQuery>,
 ) -> axum::Json<serde_json::Value> {
-    let vault = WayfinderVault::new(&state.vault_path).unwrap_or_else(|_| WayfinderVault::in_memory().unwrap());
-    let items = vault.list_items().await.unwrap_or_default();
+    let vault = open_vault(&state);
+    let items = match q.tag.as_deref().filter(|t| !t.is_empty()) {
+        Some(t) => vault.notes_with_tag(t).await.unwrap_or_default(),
+        None => vault.list_items().await.unwrap_or_default(),
+    };
     axum::Json(serde_json::json!({
         "notes": items,
         "count": items.len()
     }))
+}
+
+async fn handle_backlinks(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> axum::Json<serde_json::Value> {
+    let vault = open_vault(&state);
+    let back = vault.backlinks(&id).await.unwrap_or_default();
+    let unresolved = vault.unresolved_links(&id).await.unwrap_or_default();
+    let brief: Vec<_> = back.iter().map(|n| serde_json::json!({ "id": n.id, "title": n.title })).collect();
+    axum::Json(serde_json::json!({
+        "id": id,
+        "backlinks": brief,
+        "unresolved_links": unresolved
+    }))
+}
+
+async fn handle_tags(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> axum::Json<serde_json::Value> {
+    let tags = open_vault(&state).list_tags().await.unwrap_or_default();
+    let list: Vec<_> = tags.iter().map(|(t, n)| serde_json::json!({ "tag": t, "count": n })).collect();
+    axum::Json(serde_json::json!({ "tags": list }))
 }
 
 async fn handle_save_note(
@@ -750,16 +871,21 @@ async fn handle_save_note(
     let tags: Vec<String> = payload["tags"]
         .as_array()
         .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
-        .unwrap_or_else(|| vec!["field-note".to_string()]);
+        .unwrap_or_default();
+    // Explicit tags plus #tags found in the text; [[links]] are read from the text on every list.
+    let all_tags = nautik9_wayfinder::merge_tags(&tags, content);
+    let links = nautik9_wayfinder::parse_links(content);
 
-    let vault = WayfinderVault::new(&state.vault_path).unwrap_or_else(|_| WayfinderVault::in_memory().unwrap());
+    let vault = open_vault(&state);
     let emb = generate_fast_embedding(&format!("{} {}", title, content), state.hardware.recommended_embedding_dim);
     let ok = vault.put_item(&id, title, content, &tags, Some(&emb)).await.is_ok();
 
     axum::Json(serde_json::json!({
         "success": ok,
         "id": id,
-        "title": title
+        "title": title,
+        "tags": all_tags,
+        "links": links
     }))
 }
 
@@ -827,3 +953,169 @@ fn get_mobile_html() -> &'static str {
     include_str!("index.html")
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    const TOKEN: &str = "t0ken-for-tests-t0ken-for-tests-0123456789";
+
+    fn dead_lemonade() -> LemonadeModule {
+        let mut cfg = LemonadeConfig::default();
+        cfg.providers = vec![nautik9_lemonade::Provider {
+            name: "dead".into(),
+            base_url: "http://127.0.0.1:1/v1".into(),
+            model: Some("m".into()),
+            api_key: None,
+            offline: false,
+        }];
+        cfg.timeout_seconds = 2;
+        LemonadeModule::new(cfg)
+    }
+
+    fn app(dir: &std::path::Path) -> axum::Router {
+        let hw = HardwareProfile::detect_or_scaffold(Some("s25ultra"));
+        let state = AppState {
+            registry: std::sync::Arc::new(tokio::sync::Mutex::new(ModuleRegistry::new(hw.clone()))),
+            hardware: std::sync::Arc::new(hw),
+            vault_path: dir.join("vault.db"),
+            sms_messages: Default::default(),
+            work_config: Default::default(),
+            lemonade: std::sync::Arc::new(dead_lemonade()),
+            fleet_url: "http://127.0.0.1:1".into(),
+        };
+        build_router(state, TOKEN.to_string())
+    }
+
+    async fn call(app: &axum::Router, method: &str, uri: &str, bearer: Option<&str>, body: Option<serde_json::Value>) -> (StatusCode, serde_json::Value) {
+        let mut b = Request::builder().method(method).uri(uri);
+        if let Some(t) = bearer {
+            b = b.header("authorization", format!("Bearer {}", t));
+        }
+        let req = match body {
+            Some(j) => b.header("content-type", "application/json").body(Body::from(j.to_string())).unwrap(),
+            None => b.body(Body::empty()).unwrap(),
+        };
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let status = resp.status();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
+    }
+
+    #[tokio::test]
+    async fn api_requires_token_except_health() {
+        let d = tempfile::tempdir().unwrap();
+        let a = app(d.path());
+        let (s, _) = call(&a, "GET", "/api/health", None, None).await;
+        assert_eq!(s, StatusCode::OK);
+        for uri in ["/api/sms/inbox", "/api/notes", "/api/status", "/api/fleet/status", "/api/tags", "/api/providers", "/assets/mack.jpg"] {
+            let (s, _) = call(&a, "GET", uri, None, None).await;
+            assert_eq!(s, StatusCode::UNAUTHORIZED, "{uri} must need a token");
+        }
+        let (s, _) = call(&a, "POST", "/api/chat", None, Some(serde_json::json!({"prompt":"hi"}))).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+        let (s, _) = call(&a, "GET", "/api/sms/inbox", Some("wrong"), None).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+        let (s, _) = call(&a, "GET", "/api/sms/inbox", Some(TOKEN), None).await;
+        assert_eq!(s, StatusCode::OK);
+        let (s, _) = call(&a, "GET", &format!("/api/sms/inbox?token={}", TOKEN), None, None).await;
+        assert_eq!(s, StatusCode::OK);
+        let (s, _) = call(&a, "GET", "/api/sms/inbox?token=nope", None, None).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn chat_is_502_with_no_invented_reply_when_all_endpoints_down() {
+        let d = tempfile::tempdir().unwrap();
+        let a = app(d.path());
+        let (s, v) = call(&a, "POST", "/api/chat", Some(TOKEN), Some(serde_json::json!({"prompt":"Status of the boat"}))).await;
+        assert_eq!(s, StatusCode::BAD_GATEWAY);
+        assert_eq!(v["ok"], false);
+        assert!(v.get("response").is_none());
+        assert_eq!(v["attempts"].as_array().unwrap().len(), 1);
+        // offline flag with no offline endpoint is also an honest error
+        let (s, v) = call(&a, "POST", "/api/chat", Some(TOKEN), Some(serde_json::json!({"prompt":"hi","offline":true}))).await;
+        assert_eq!(s, StatusCode::BAD_GATEWAY);
+        assert!(v["error"].as_str().unwrap().contains("offline"));
+    }
+
+    #[tokio::test]
+    async fn fleet_status_reports_aggregator_error_not_invented_nodes() {
+        let d = tempfile::tempdir().unwrap();
+        let a = app(d.path());
+        let (s, v) = call(&a, "GET", "/api/fleet/status", Some(TOKEN), None).await;
+        assert_eq!(s, StatusCode::BAD_GATEWAY);
+        assert_eq!(v["ok"], false);
+        assert!(v["error"].as_str().unwrap().contains("unreachable"));
+        assert!(v.get("nodes").is_none() && v.get("summary").is_none());
+    }
+
+    #[tokio::test]
+    async fn fleet_status_passes_the_real_answer_through() {
+        use axum::routing::get;
+        let mock = axum::Router::new().route(
+            "/api/fleet/nodes",
+            get(|| async { axum::Json(serde_json::json!({"nodes":[{"name":"only-one","reachable":false}],"summary":{"nodes_total":1}})) }),
+        );
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(l, mock).await.unwrap() });
+        let v = fleet_status_value(&format!("http://{}", addr)).await.unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["nodes"][0]["name"], "only-one");
+        assert_eq!(v["nodes"][0]["reachable"], false);
+    }
+
+    #[tokio::test]
+    async fn incoming_text_with_no_model_has_no_draft_and_nomodel_status() {
+        let d = tempfile::tempdir().unwrap();
+        let a = app(d.path());
+        let (s, v) = call(&a, "POST", "/api/sms/incoming", Some(TOKEN), Some(serde_json::json!({"sender":"+15550001111","body":"test text"}))).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(v["message"]["status"], "NoModel");
+        assert!(v["message"]["draft_reply"].is_null());
+        assert!(v["message"]["reply_model"].is_null());
+        assert!(v["message"]["draft_error"].as_str().unwrap().contains("no model endpoint answered"));
+        // auto_reply is off by default, so no composer was opened
+        let (_, inbox) = call(&a, "GET", "/api/sms/inbox", Some(TOKEN), None).await;
+        assert_eq!(inbox["work_config"]["auto_reply"], false);
+        assert_eq!(inbox["work_config"]["owner_name"], "Cesar");
+    }
+
+    #[tokio::test]
+    async fn workmode_owner_name_is_configurable() {
+        let d = tempfile::tempdir().unwrap();
+        let a = app(d.path());
+        let (_, v) = call(&a, "POST", "/api/sms/workmode", Some(TOKEN), Some(serde_json::json!({"owner_name":"Sam","owner_numbers":["555-000-1234"]}))).await;
+        assert_eq!(v["work_config"]["owner_name"], "Sam");
+        assert_eq!(v["work_config"]["owner_numbers"][0], "555-000-1234");
+    }
+
+    #[tokio::test]
+    async fn notes_links_tags_and_backlinks_over_the_api() {
+        let d = tempfile::tempdir().unwrap();
+        let a = app(d.path());
+        let (_, v) = call(&a, "POST", "/api/notes", Some(TOKEN), Some(serde_json::json!({"id":"n1","title":"Alpha","content":"see [[Beta]] #sonar"}))).await;
+        assert_eq!(v["links"][0], "Beta");
+        assert_eq!(v["tags"][0], "sonar");
+        call(&a, "POST", "/api/notes", Some(TOKEN), Some(serde_json::json!({"id":"n2","title":"Beta","content":"plain"}))).await;
+        let (_, b) = call(&a, "GET", "/api/notes/n2/backlinks", Some(TOKEN), None).await;
+        assert_eq!(b["backlinks"][0]["id"], "n1");
+        let (_, t) = call(&a, "GET", "/api/tags", Some(TOKEN), None).await;
+        assert_eq!(t["tags"][0]["tag"], "sonar");
+        let (_, n) = call(&a, "GET", "/api/notes?tag=sonar", Some(TOKEN), None).await;
+        assert_eq!(n["count"], 1);
+    }
+
+    #[test]
+    fn ui_does_not_claim_a_send_or_ship_canned_engine_text() {
+        let html = get_mobile_html();
+        assert!(!html.contains("AutoSent"));
+        assert!(!html.contains("AUTO-DISPATCHED"));
+        assert!(!html.contains("100% Offline"));
+    }
+}
