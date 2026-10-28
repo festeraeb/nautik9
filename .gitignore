@@ -1,0 +1,10 @@
+# Personal phone data pulled from the device: never commit or push.
+phone_sync/
+# Runtime databases (the vault, phone copies) and debug screenshots.
+*.db
+*.db-wal
+*.db-shm
+phone_screen.png
+# Personal photo; ships only if the operator says so.
+assets/mack_avatar.jpg
+target/
