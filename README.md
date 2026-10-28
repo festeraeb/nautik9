@@ -1,93 +1,71 @@
-# 🐾 NautiK9 Survey & Personal Organization Engine
+# NautiK9
 
-High-performance, pure-Rust alternative to WebAssembly-heavy vault apps, built from the ground up for the **Samsung Galaxy S25 Ultra (Snapdragon 8 Elite / One UI 7)** and federated with the **CesarOps Swarm & Lemonade Cluster**.
+A Rust notes-and-assistant server with a phone-friendly web UI. It is a rewrite of the design of Jade Vault (MIT) for the CESARops setup: your notes stay in a local SQLite vault, a chain of OpenAI-compatible model endpoints that you configure answers questions and drafts text replies, and the phone is reached over adb. See [PORTING.md](PORTING.md) for what is done and what is not.
 
----
+This README describes what the code does today. Anything not built yet is under "Planned" and is marked that way.
 
-## 🌟 Why NautiK9?
+## What it does today
 
-Previous mobile vault implementations (e.g., Jade Vault) relied on running three separate Emscripten WebAssembly engines inside an Android WebView, resulting in:
-- High memory usage (>500 MB)
-- 3–8 second UI freezes during client-side JavaScript embedding
-- Suboptimal hardware acceleration
+- **Vault notes** (SQLite, `vault.db`): markdown text with `[[links]]` and `#tags` read from the content when you save. API and UI for backlinks, unresolved links, tag list and tag filter. Search is keyword matching over title, content and tags.
+- **Model endpoints**: an ordered list in `~/.config/nautik9/providers.json` (defaults: local Lemonade `127.0.0.1:13305/v1`, then Paddler `127.0.0.1:8080/lemonade-t440/v1`). Each is OpenAI-compatible. The first that answers wins. The answer is labelled with the model name the endpoint returned and the endpoint that answered. If none answer, the API returns HTTP 502 with the attempts, and the UI says so. There is no canned fallback text.
+- **Work SMS** (Android phone over adb): reads the inbox, drafts a reply per new text with the model chain, and, when you approve, opens the phone's SMS composer with the reply filled in. It never sends; you press send on the phone. Status names are `Drafted`, `Approved`, `OpenedInComposer`, `NoModel`, `Ignored`. If no model answers there is no draft and the status is `NoModel`. The owner name is configurable (`workmode.json`, default "Cesar") and replies use the name, not pronouns. Texts from other people are never given vault notes.
+- **Fleet tab**: shows what the fleet aggregator (`--fleet-url`, default `http://127.0.0.1:9122`) returns, or the error if it cannot be reached.
+- **Access control**: every `/api/*` route except `/api/health` needs the access token (`Authorization: Bearer <token>` or `?token=`). The token is created on first run in `~/.config/nautik9/token` (mode 0600). Open the UI once with `/?token=...`; the browser remembers it.
+- **Mack avatar**: the companion picture and mood text in the UI (cosmetic).
 
-**NautiK9 replaces this with a native, pure-Rust modular architecture:**
-- **Zero-lag embedded vector search (<15ms)** via native SIMD / ARM NEON.
-- **Embedded Wayfinder Knowledge Vault**: Local SQLite-backed storage for survey observations, personal notes, and mission logs with semantic search and automatic 8-step task decomposition.
-- **Symmetrical Lemonade Client**: Dynamic dual-mode LLM reasoning. Streams online via SSE to `https://cesarops.com/lemonade/v1` when connected, and drops down to on-device quantized models when offline with zero UI stalls or feature loss.
-- **Hardware Generational Profiling**: Tailored for the **Samsung Galaxy S25 Ultra** (Snapdragon 8 Elite / Oryon ARMv9.2 SVE2, Hexagon NPU, Adreno 830 Vulkan 1.3, One UI 7 Galaxy AI integration), with graceful scaffolding across older phone generations.
-- **Mack & Survey Boat Companion**: Ambient reactive avatar engine featuring Mack (the survey dog) and the NautiK9 vessel with the flag, transitioning between `Idle`, `Attentive`, `Sniffing`, `TargetLocked`, and `SurveyNavigating`.
+## Run it
 
----
-
-## 🏗️ Workspace Architecture
-
-```
-nautik9/
-├── Cargo.toml                      # Unified workspace manifest
-├── crates/
-│   ├── nautik9-core/               # Module system trait, event bus, hardware profiler, Mack avatar
-│   ├── nautik9-wayfinder/          # Embedded Wayfinder vault, SQLite storage, semantic search, decomposer
-│   ├── nautik9-lemonade/           # Symmetrical Lemonade client & offline fallback engine
-│   ├── nautik9-fleet/              # CesarOps swarm bridge, Buzz board reporter, telemetry
-│   └── nautik9-app/                # CLI runtime & application shell
-```
-
----
-
-## 📱 Hardware Profiling & Samsung Galaxy S25 Ultra / One UI 7
-
-NautiK9 dynamically profiles the host device to allocate appropriate model sizes and vector dimensions:
-
-| Dimension | Flagship Ultra (Samsung S25 Ultra) | Modern High-End (S24 Ultra) | Baseline ARM64 |
-| :--- | :--- | :--- | :--- |
-| **SoC / CPU** | Snapdragon 8 Elite / Oryon (ARMv9.2 SVE2) | Snapdragon 8 Gen 3 (ARM NEON) | Generic Cortex-A53 |
-| **RAM** | 16,384 MB LPDDR5X | 12,288 MB | 4,096 MB |
-| **NPU / GPU** | Hexagon HTP (45 TOPS) + Adreno 830 Vulkan | Hexagon NPU + Adreno 750 | CPU scalar only |
-| **LLM Tier** | 7B / 8B Quantized (IQ4_XS) | 3B Quantized (Q4_K_M) | 0.5B / 1.5B (Q4_0) |
-| **Embeddings** | 768-dimensional (embeddinggemma-300m) | 768-dimensional | 384-dimensional |
-| **One UI 7 Tools** | Edge Panel, S-Pen Air Actions, Galaxy AI Bridge | One UI 6.1.1 basic | None |
-
----
-
-## 🛠️ CLI Usage & Quickstart
-
-### 1. View System & Hardware Profile Status
 ```bash
-cargo run -p nautik9-app -- --device s25ultra status
+cargo build --release -p nautik9-app
+# default: binds 0.0.0.0:8340 so the phone on the LAN can reach it
+./target/release/nautik9-app --device s25ultra serve --port 8340
+# this machine only:
+./target/release/nautik9-app serve --bind 127.0.0.1
 ```
 
-### 2. Index a New Field Note or Survey Observation
-```bash
-cargo run -p nautik9-app -- --device s25ultra index "note-001" \
-  "First NautiK9 Survey Pass" \
-  "Mack spotted magnetic anomaly near flag buoy at coordinates 45.02N 83.21W." \
-  -t sonar -t mack -t survey
+On start it prints the local and LAN URL and the token file path. On a terminal (or with `--print-token`) it also prints the URL with the token, once. The server speaks plain HTTP, so the token and your data cross the network unencrypted: use it on a trusted LAN or VPN and never port-forward it.
+
+Config folder (`--config-dir`, default `~/.config/nautik9`):
+
+| File | Purpose |
+| :-- | :-- |
+| `token` | access token, created on first run |
+| `providers.json` | `{"providers":[{"name","base_url","model"?,"api_key"?,"offline"?}], "timeout_seconds", "max_tokens"}` |
+| `workmode.json` | `owner_name`, `owner_numbers`, `custom_instructions`, `auto_reply`, ... |
+
+If `model` is omitted the endpoint's loaded model is used (Lemonade `/api/v1/health`, else the first model from `/models`). A provider marked `"offline": true` is a real local endpoint (for example a Bonsai or burn server) that the "offline only" option may use.
+
+CLI: `status`, `search`, `chat`, `index`, `decompose` (a fixed checklist, not model output), `serve`. `--device` is a profile hint (`s25ultra`, `s24`, `baseline`, `desktop`); it is not probed from hardware.
+
+## Layout
+
+```
+crates/
+  nautik9-core/       module trait, event bus, SMS types, device profile hint, avatar state
+  nautik9-wayfinder/  SQLite vault, links/tags/backlinks, keyword search
+  nautik9-lemonade/   OpenAI-compatible provider chain, SMS prompts
+  nautik9-fleet/      posts telemetry to a configured endpoint
+  nautik9-app/        CLI, HTTP server, web UI (src/index.html)
 ```
 
-### 3. Semantic Search with Reactive Mack Companion
-```bash
-cargo run -p nautik9-app -- --device s25ultra search "flag buoy sonar"
-```
+## Planned (not built)
 
-### 4. Symmetrical Lemonade Chat (Online or Offline Fallback)
-```bash
-# Symmetrical cloud streaming or local on-device fallback
-cargo run -p nautik9-app -- --device s25ultra chat "Status of the survey boat and Mack" --offline
-```
+These appeared in earlier versions of this README. There is no code behind them yet.
 
-### 5. Task Decomposition (Breaks big goals into 8 concrete steps)
-```bash
-cargo run -p nautik9-app -- --device s25ultra decompose "Multi-beam sonar pass on shallow shipwreck"
-```
+- Fast on-device vector search. Today's "embedding" is a character-hash fingerprint, not semantic; real embeddings via an OpenAI-compatible `/embeddings` endpoint (embeddinggemma) are planned.
+- Running quantized models on the phone itself (including its NPU).
+- Streaming answers over SSE; a hosted endpoint at cesarops.com/lemonade.
+- Real tree-of-thought reasoning (the endpoint now answers 501).
+- TLS, a login for more than one user, a Discord/Vector bridge as in Jade.
 
----
-
-## 🧪 Running Automated Tests
-
-All modules include unit tests verifying event routing, SQLite indexing, and hardware profiling:
+## Tests
 
 ```bash
 cargo test --workspace
 ```
-*(All 8 unit tests pass with zero warnings)*
+
+Covers token auth, the 502 when no endpoint answers, fleet errors, SMS status names and prompts, and notes links/tags/backlinks. Tests never open the phone composer or read the phone.
+
+## Credit
+
+Design follows Jade Vault (MIT); this is a rewrite, not copied code. See NOTICE.

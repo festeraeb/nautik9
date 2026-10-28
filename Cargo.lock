@@ -818,6 +818,7 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
+ "http-body-util",
  "nautik9-core",
  "nautik9-fleet",
  "nautik9-lemonade",
@@ -825,7 +826,9 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
+ "tower",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -868,6 +871,7 @@ name = "nautik9-lemonade"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "axum",
  "chrono",
  "futures-util",
  "nautik9-core",
