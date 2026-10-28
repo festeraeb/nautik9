@@ -7,7 +7,7 @@ use nautik9_core::{
     event::{EventPayload, NautikEvent},
     hardware::HardwareProfile,
     module::{ModuleContext, ModuleRegistry, NautikModule},
-    sms::{SmsMessage, SmsStatus, WorkModeConfig},
+    sms::{composer_opened_message, SmsMessage, SmsStatus, WorkModeConfig},
 };
 use nautik9_fleet::{FleetConfig, FleetModule};
 use nautik9_lemonade::{LemonadeConfig, LemonadeModule};
@@ -79,7 +79,17 @@ enum Commands {
         /// Print the access URL including the token (otherwise only done on a terminal)
         #[arg(long)]
         print_token: bool,
+        /// Where texts come from: `adb` (a phone on this machine's adb) or `app` (the NautiK9
+        /// Android app pushes its inbox to /api/sms/ingest and opens the composer itself)
+        #[arg(long, value_enum, default_value = "adb")]
+        sms_bridge: SmsBridge,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum SmsBridge {
+    Adb,
+    App,
 }
 
 /// CLI Output Formatter Module that presents cross-module responses cleanly in terminal
@@ -251,8 +261,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Interactive => {
             println!("Interactive mode: Mack is on watch. Type your request or 'exit'.");
         }
-        Commands::Serve { port, bind, fleet_url, print_token } => {
-            let opts = ServeOptions { port, bind, fleet_url, print_token, config_dir, lemonade_config };
+        Commands::Serve { port, bind, fleet_url, print_token, sms_bridge } => {
+            let opts = ServeOptions { port, bind, fleet_url, print_token, config_dir, lemonade_config, sms_bridge };
             serve_mobile_web(opts, registry, cli.vault_path).await?;
             return Ok(());
         }
@@ -271,6 +281,7 @@ struct AppState {
     work_config: std::sync::Arc<tokio::sync::RwLock<WorkModeConfig>>,
     lemonade: std::sync::Arc<LemonadeModule>,
     fleet_url: String,
+    sms_bridge: SmsBridge,
 }
 
 struct ServeOptions {
@@ -280,6 +291,7 @@ struct ServeOptions {
     print_token: bool,
     config_dir: PathBuf,
     lemonade_config: LemonadeConfig,
+    sms_bridge: SmsBridge,
 }
 
 fn build_router(state: AppState, token: String) -> axum::Router {
@@ -304,6 +316,7 @@ fn build_router(state: AppState, token: String) -> axum::Router {
         .route("/api/sms/workmode", post(handle_sms_workmode))
         .route("/api/sms/incoming", post(handle_sms_incoming))
         .route("/api/sms/action", post(handle_sms_action))
+        .route("/api/sms/ingest", post(handle_sms_ingest))
         .layer(axum::middleware::from_fn_with_state(
             std::sync::Arc::new(token),
             auth::require_token,
@@ -373,8 +386,9 @@ async fn apply_draft(
 }
 
 /// With auto_reply on, open the composer for a fresh draft. Nothing is sent.
-async fn maybe_open_composer(msg: &mut SmsMessage, cfg: &WorkModeConfig) {
-    if cfg.auto_reply && msg.status == SmsStatus::Drafted {
+/// With the app bridge the server cannot open it; the page does when the user approves.
+async fn maybe_open_composer(msg: &mut SmsMessage, cfg: &WorkModeConfig, bridge: SmsBridge) {
+    if bridge == SmsBridge::Adb && cfg.auto_reply && msg.status == SmsStatus::Drafted {
         if let Some(d) = msg.draft_reply.clone() {
             if device_sms::dispatch_sms_to_phone(&msg.sender, &d).await.is_ok() {
                 msg.status = SmsStatus::OpenedInComposer;
@@ -395,22 +409,29 @@ async fn serve_mobile_web(
     let lemonade = std::sync::Arc::new(LemonadeModule::new(opts.lemonade_config.clone()));
 
     // Read the phone inbox over ADB. Counts only are printed, never contents.
-    let mut initial_sms = match device_sms::fetch_real_device_sms(5).await {
-        Ok(msgs) => {
-            println!("Phone inbox: read {} message(s) over adb", msgs.len());
-            msgs
-        }
-        Err(e) => {
-            println!("Phone inbox: unavailable ({})", e);
+    // With the app bridge the app pushes its inbox to /api/sms/ingest instead.
+    let mut initial_sms = match opts.sms_bridge {
+        SmsBridge::App => {
+            println!("Phone inbox: pushed by the NautiK9 app (no adb)");
             Vec::new()
         }
+        SmsBridge::Adb => match device_sms::fetch_real_device_sms(5).await {
+            Ok(msgs) => {
+                println!("Phone inbox: read {} message(s) over adb", msgs.len());
+                msgs
+            }
+            Err(e) => {
+                println!("Phone inbox: unavailable ({})", e);
+                Vec::new()
+            }
+        },
     };
 
     if work_config.enabled && !initial_sms.is_empty() {
         println!("Drafting replies through the configured model chain...");
         for msg in initial_sms.iter_mut() {
             apply_draft(msg, &lemonade, &work_config, &vault_path, hardware.recommended_embedding_dim).await;
-            maybe_open_composer(msg, &work_config).await;
+            maybe_open_composer(msg, &work_config, opts.sms_bridge).await;
         }
         let none = initial_sms.iter().filter(|m| m.status == SmsStatus::NoModel).count();
         if none > 0 {
@@ -426,6 +447,7 @@ async fn serve_mobile_web(
         work_config: std::sync::Arc::new(tokio::sync::RwLock::new(work_config)),
         lemonade,
         fleet_url: opts.fleet_url.clone(),
+        sms_bridge: opts.sms_bridge,
     };
 
     let app = build_router(state, token.clone());
@@ -447,8 +469,10 @@ async fn serve_mobile_web(
     } else {
         println!("  (token URL not printed to a log; read the token file or start with --print-token)");
     }
-    println!("  WARNING: plain HTTP. The token and your data cross the network unencrypted.");
-    println!("  Keep this on a trusted LAN or VPN; never port-forward it to the internet.");
+    if opts.bind != "127.0.0.1" && opts.bind != "localhost" {
+        println!("  WARNING: plain HTTP. The token and your data cross the network unencrypted.");
+        println!("  Keep this on a trusted LAN or VPN; never port-forward it to the internet.");
+    }
     println!("=======================================================");
 
     axum::serve(listener, app).await?;
@@ -589,7 +613,7 @@ async fn handle_sms_inbox(
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::extract::Query(query): axum::extract::Query<SmsQuery>,
 ) -> axum::Json<serde_json::Value> {
-    if query.sync.unwrap_or(false) {
+    if query.sync.unwrap_or(false) && state.sms_bridge == SmsBridge::Adb {
         if let Ok(real_messages) = device_sms::fetch_real_device_sms(5).await {
             let work_cfg = state.work_config.read().await.clone();
             let mut list = state.sms_messages.write().await;
@@ -597,7 +621,7 @@ async fn handle_sms_inbox(
                 if !list.iter().any(|m| m.id == real_msg.id) {
                     if work_cfg.enabled {
                         apply_draft(&mut real_msg, &state.lemonade, &work_cfg, &state.vault_path, state.hardware.recommended_embedding_dim).await;
-                        maybe_open_composer(&mut real_msg, &work_cfg).await;
+                        maybe_open_composer(&mut real_msg, &work_cfg, state.sms_bridge).await;
                     }
                     list.insert(0, real_msg);
                 }
@@ -687,7 +711,7 @@ async fn handle_sms_incoming(
 
     if work_cfg.enabled {
         apply_draft(&mut new_msg, &state.lemonade, &work_cfg, &state.vault_path, state.hardware.recommended_embedding_dim).await;
-        maybe_open_composer(&mut new_msg, &work_cfg).await;
+        maybe_open_composer(&mut new_msg, &work_cfg, state.sms_bridge).await;
 
         let reg_guard = state.registry.lock().await;
         let mut avatar = reg_guard.context.avatar.write().await;
@@ -722,6 +746,7 @@ async fn handle_sms_action(
     let mut list = state.sms_messages.write().await;
     let mut updated_msg = None;
     let mut dispatch_result = None;
+    let mut composer = None;
 
     for msg in list.iter_mut() {
         if msg.id == id {
@@ -732,6 +757,12 @@ async fn handle_sms_action(
                 "approve" => {
                     msg.status = SmsStatus::Approved;
                     match msg.draft_reply.clone().filter(|d| !d.trim().is_empty()) {
+                        Some(draft_text) if state.sms_bridge == SmsBridge::App => {
+                            match device_sms::clean_recipient(&msg.sender) {
+                                Ok(to) => composer = Some(serde_json::json!({ "to": to, "body": draft_text })),
+                                Err(e) => dispatch_result = Some(format!("Error: {}", e)),
+                            }
+                        }
                         Some(draft_text) => match device_sms::dispatch_sms_to_phone(&msg.sender, &draft_text).await {
                             Ok(res) => {
                                 msg.status = SmsStatus::OpenedInComposer;
@@ -748,6 +779,11 @@ async fn handle_sms_action(
                 "ignore" => {
                     msg.status = SmsStatus::Ignored;
                 }
+                // The app reports that the phone's composer opened with the draft.
+                "opened" if msg.status == SmsStatus::Approved => {
+                    msg.status = SmsStatus::OpenedInComposer;
+                    dispatch_result = Some(composer_opened_message(&msg.sender));
+                }
                 _ => {}
             }
             updated_msg = Some(msg.clone());
@@ -758,8 +794,55 @@ async fn handle_sms_action(
     axum::Json(serde_json::json!({
         "success": updated_msg.is_some(),
         "message": updated_msg,
-        "dispatch_result": dispatch_result
+        "dispatch_result": dispatch_result,
+        "composer": composer
     }))
+}
+
+#[derive(serde::Deserialize)]
+struct IngestedSms {
+    id: String,
+    sender: String,
+    body: String,
+    date_ms: Option<i64>,
+}
+
+#[derive(serde::Deserialize)]
+struct SmsIngest {
+    messages: Vec<IngestedSms>,
+}
+
+/// The Android app pushes the newest inbox rows here (it holds READ_SMS; the server does not).
+/// Rows already seen are skipped; new ones are drafted when work mode is on.
+async fn handle_sms_ingest(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::Json(payload): axum::Json<SmsIngest>,
+) -> axum::Json<serde_json::Value> {
+    let work_cfg = state.work_config.read().await.clone();
+    let mut added = 0;
+    for row in payload.messages {
+        let id = format!("sms-{}", row.id);
+        if state.sms_messages.read().await.iter().any(|m| m.id == id) {
+            continue;
+        }
+        let mut msg = SmsMessage {
+            id,
+            sender: row.sender,
+            body: row.body,
+            timestamp: device_sms::format_sms_time(row.date_ms),
+            draft_reply: None,
+            draft_error: None,
+            status: SmsStatus::Pending,
+            reply_model: None,
+            latency_ms: None,
+        };
+        if work_cfg.enabled {
+            apply_draft(&mut msg, &state.lemonade, &work_cfg, &state.vault_path, state.hardware.recommended_embedding_dim).await;
+        }
+        state.sms_messages.write().await.insert(0, msg);
+        added += 1;
+    }
+    axum::Json(serde_json::json!({ "success": true, "added": added }))
 }
 
 /// Report the aggregator's real answer, or the real error. Nothing is invented.
@@ -971,6 +1054,10 @@ mod tests {
     }
 
     fn app(dir: &std::path::Path) -> axum::Router {
+        app_with_bridge(dir, SmsBridge::Adb)
+    }
+
+    fn app_with_bridge(dir: &std::path::Path, sms_bridge: SmsBridge) -> axum::Router {
         let hw = HardwareProfile::detect_or_scaffold(Some("s25ultra"));
         let state = AppState {
             registry: std::sync::Arc::new(tokio::sync::Mutex::new(ModuleRegistry::new(hw.clone()))),
@@ -980,6 +1067,7 @@ mod tests {
             work_config: Default::default(),
             lemonade: std::sync::Arc::new(dead_lemonade()),
             fleet_url: "http://127.0.0.1:1".into(),
+            sms_bridge,
         };
         build_router(state, TOKEN.to_string())
     }
@@ -1061,6 +1149,37 @@ mod tests {
         assert_eq!(v["ok"], true);
         assert_eq!(v["nodes"][0]["name"], "only-one");
         assert_eq!(v["nodes"][0]["reachable"], false);
+    }
+
+    #[tokio::test]
+    async fn app_bridge_ingests_once_and_hands_the_composer_to_the_page() {
+        let d = tempfile::tempdir().unwrap();
+        let a = app_with_bridge(d.path(), SmsBridge::App);
+        let rows = serde_json::json!({"messages":[
+            {"id":"41","sender":"+1 (555) 000-2222","body":"on my way","date_ms":1761638400000i64},
+            {"id":"42","sender":"+15550003333","body":"call me"}
+        ]});
+        let (s, v) = call(&a, "POST", "/api/sms/ingest", Some(TOKEN), Some(rows.clone())).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(v["added"], 2);
+        let (_, v) = call(&a, "POST", "/api/sms/ingest", Some(TOKEN), Some(rows)).await;
+        assert_eq!(v["added"], 0, "rows already seen are skipped");
+        let (s, _) = call(&a, "POST", "/api/sms/ingest", None, Some(serde_json::json!({"messages":[]}))).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+
+        // Approve: the server does not open anything; it returns the composer for the app.
+        let (_, v) = call(&a, "POST", "/api/sms/action", Some(TOKEN),
+            Some(serde_json::json!({"id":"sms-41","action":"approve","edited_draft":"See you soon"}))).await;
+        assert_eq!(v["message"]["status"], "Approved");
+        assert_eq!(v["composer"]["to"], "+15550002222");
+        assert_eq!(v["composer"]["body"], "See you soon");
+        // Only the app's report moves it to OpenedInComposer.
+        let (_, v) = call(&a, "POST", "/api/sms/action", Some(TOKEN), Some(serde_json::json!({"id":"sms-41","action":"opened"}))).await;
+        assert_eq!(v["message"]["status"], "OpenedInComposer");
+        // Work mode is on by default: the other text was drafted, and with no model it is NoModel.
+        // "opened" does nothing for a message that was not approved.
+        let (_, v) = call(&a, "POST", "/api/sms/action", Some(TOKEN), Some(serde_json::json!({"id":"sms-42","action":"opened"}))).await;
+        assert_eq!(v["message"]["status"], "NoModel");
     }
 
     #[tokio::test]

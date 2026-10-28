@@ -41,7 +41,7 @@ NautiK9 follows the design of **Jade Vault** (MIT, v2.16.1). It is a rewrite in 
 | Trajectory log / fine-tuning export | not planned | |
 | Webxdc mini apps | not planned | |
 | Live2D avatar, TTS | not planned | NautiK9 has the Mack picture and mood text only |
-| Android wrapper app | not planned | phone uses the web UI in a browser |
+| Android wrapper app | done (CPU) | `android/`: WebView over the server running in the app, on-device llama-server for offline answers, inbox read by the app, no adb needed |
 | Secrets as `{{NAME}}` for http_request | not planned | keys live in `providers.json` (keep it private) |
 | Tree-of-thought reasoner (not in Jade) | planned | `/api/tot` answers 501; the old output was a fixed template |
 

@@ -979,6 +979,7 @@
                 Asked in this order; the first that answers wins. If none answer you get an error, never an invented reply. Edit providers.json in the config folder to change the list.
             </p>
             <div id="providersList" style="display:flex;flex-direction:column;gap:8px;"></div>
+            <div id="offlineModelBox" style="display:none;margin-top:10px;font-size:0.85rem;"></div>
         </div>
 
         <!-- Quick keyword search -->
@@ -1257,6 +1258,55 @@
         }
         function esc(v) {
             return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        }
+        // ---- NautiK9 Android app bridge (absent in a plain browser) ----
+        // The app holds READ_SMS and opens the composer; the server never touches the phone.
+        const AppBridge = window.NautiK9Android || null;
+        async function pushAppInbox() {
+            if (!AppBridge) return;
+            try {
+                const rows = JSON.parse(AppBridge.readInbox(10));
+                if (rows.error) { console.warn('inbox: ' + rows.error); return; }
+                await fetch('/api/sms/ingest', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ messages: rows })
+                });
+            } catch (e) { console.warn('inbox push failed: ' + e); }
+        }
+        // The server hands back {to, body}; open the phone's composer, then report it opened.
+        async function openComposer(id, composer) {
+            let opened = false;
+            if (AppBridge) {
+                opened = AppBridge.openComposer(composer.to, composer.body);
+            } else {
+                window.location.href = 'sms:' + encodeURIComponent(composer.to) + '?body=' + encodeURIComponent(composer.body);
+                opened = true;
+            }
+            if (opened) {
+                await fetch('/api/sms/action', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id, action: 'opened' })
+                });
+            }
+            return opened;
+        }
+        function renderOfflineModel() {
+            if (!AppBridge) return;
+            const box = document.getElementById('offlineModelBox');
+            box.style.display = 'block';
+            let st = {};
+            try { st = JSON.parse(AppBridge.offlineModelStatus()); } catch (e) {}
+            if (st.state === 'ready') {
+                box.innerHTML = `On-device model: <b>${esc(st.file)}</b> (${esc(st.size_mb)} MB), ${st.running ? 'running' : 'not running'}`;
+            } else if (st.state === 'downloading') {
+                box.innerHTML = `On-device model downloading: ${esc(st.done_mb)} / ${esc(st.size_mb)} MB`;
+                setTimeout(renderOfflineModel, 3000);
+            } else {
+                box.innerHTML = `No on-device model yet, so with no network nothing can answer. ` +
+                    `<button class="btn" onclick="AppBridge.downloadOfflineModel();setTimeout(renderOfflineModel,1500)">Download ${esc(st.default_name || 'model')} (${esc(st.default_size_mb || '?')} MB)</button>`;
+            }
         }
         // Mack picture needs the token too, so it is fetched with the header.
         (async function () {
@@ -1556,6 +1606,7 @@
 
         // SMS Dispatcher & Work Mode Functions
         async function loadSmsInbox(sync = false) {
+            if (sync) await pushAppInbox();
             try {
                 const res = await fetch('/api/sms/inbox' + (sync ? '?sync=true' : ''));
                 const data = await res.json();
@@ -1683,7 +1734,9 @@
                     body: JSON.stringify({ id, action })
                 });
                 const data = await res.json();
-                if (data.dispatch_result) {
+                if (data.composer) {
+                    if (!(await openComposer(id, data.composer))) alert('Could not open the SMS composer');
+                } else if (data.dispatch_result) {
                     alert(data.dispatch_result);
                 }
                 loadSmsInbox();
@@ -1748,7 +1801,11 @@
                         body: JSON.stringify({ id: data.message.id, action: 'approve' })
                     });
                     const actData = await actRes.json();
-                    statusEl.innerText = actData.dispatch_result || "Done";
+                    if (actData.composer) {
+                        statusEl.innerText = (await openComposer(data.message.id, actData.composer)) ? 'Composer opened; press send on the phone' : 'Could not open the SMS composer';
+                    } else {
+                        statusEl.innerText = actData.dispatch_result || "Done";
+                    }
                     statusEl.style.color = "var(--emerald)";
                 }
                 loadSmsInbox(false);
@@ -1870,8 +1927,9 @@
         initSensors();
         loadDeviceAndProviders();
         loadNotes();
-        loadSmsInbox();
+        loadSmsInbox(!!AppBridge);
         loadFleetTelemetry();
+        renderOfflineModel();
     </script>
 </body>
 </html>

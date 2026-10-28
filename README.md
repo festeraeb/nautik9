@@ -35,6 +35,12 @@ Config folder (`--config-dir`, default `~/.config/nautik9`):
 
 If `model` is omitted the endpoint's loaded model is used (Lemonade `/api/v1/health`, else the first model from `/models`). A provider marked `"offline": true` is a real local endpoint (for example a Bonsai or burn server) that the "offline only" option may use.
 
+`serve --sms-bridge adb` (default) reads texts from a phone on this machine's adb (USB or wireless debugging); `--sms-bridge app` is used by the Android app, which reads the inbox itself and opens the composer.
+
+## Android app
+
+`android/` builds an APK that runs this same server inside the phone on 127.0.0.1, with the vault on the phone, and llama.cpp's `llama-server` as an on-device model, so it works with no network. Texts are read by the app (READ_SMS); replies open in the phone's composer and you press send. Measured on a Galaxy S25 Ultra (CPU only) with Qwen3-4B-Instruct-2507 Q4_K_M: about 20 tokens/s generating, 80 tokens/s reading the prompt. See [android/README.md](android/README.md).
+
 CLI: `status`, `search`, `chat`, `index`, `decompose` (a fixed checklist, not model output), `serve`. `--device` is a profile hint (`s25ultra`, `s24`, `baseline`, `desktop`); it is not probed from hardware.
 
 ## Layout
@@ -53,7 +59,7 @@ crates/
 These appeared in earlier versions of this README. There is no code behind them yet.
 
 - Fast on-device vector search. Today's "embedding" is a character-hash fingerprint, not semantic; real embeddings via an OpenAI-compatible `/embeddings` endpoint (embeddinggemma) are planned.
-- Running quantized models on the phone itself (including its NPU).
+- Running models on the phone's NPU (the Android app runs them on the CPU).
 - Streaming answers over SSE; a hosted endpoint.
 - Real tree-of-thought reasoning (the endpoint now answers 501).
 - TLS, a login for more than one user, a Discord/Vector bridge as in Jade.
