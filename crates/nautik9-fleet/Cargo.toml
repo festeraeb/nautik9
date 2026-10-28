@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "CesarOps fleet tool connector, Buzz board reporter, and telemetry module"
+description = "Fleet tool connector, Buzz board reporter, and telemetry module"
 
 [dependencies]
 nautik9-core = { path = "../nautik9-core" }

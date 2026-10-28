@@ -320,7 +320,7 @@
             font-family: 'JetBrains Mono', monospace;
         }
 
-        /* Gemstone Tiers Grid (From Lucky's Jade Engine) */
+        /* Tier cards (unused) */
         .gemstone-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -904,12 +904,12 @@
     <header class="top-cockpit">
         <div class="cockpit-top-row">
             <div class="avatar-bezel" id="avatarBezel" onclick="triggerBark()" title="Tap Mack to Bark!">
-                <img src="/assets/mack.jpg" alt="Mack Companion Avatar" class="avatar-img">
+                <img src="" alt="Mack Companion Avatar" class="avatar-img">
                 <span class="online-dot"></span>
             </div>
             <div class="cockpit-meta">
                 <div class="vessel-title-row">
-                    <div class="vessel-title">Mack • Chief Nauti Dog & Helmsman 🐾⚓</div>
+                    <div class="vessel-title">Mighty Mack • Thom's NautiDog 🐾</div>
                     <span class="vessel-badge">S25 ULTRA</span>
                 </div>
                 <div class="status-pill" id="avatarBadge">
@@ -948,74 +948,46 @@
             <button class="tab-btn" onclick="switchTab('vault', this)">📓 Vault Notes</button>
             <button class="tab-btn" onclick="switchTab('senses', this)">📡 Senses</button>
             <button class="tab-btn" onclick="switchTab('fleet', this)">🚀 Fleet Deck</button>
-            <button class="tab-btn" onclick="switchTab('lemonade', this)">💬 Lemonade</button>
+            <button class="tab-btn" onclick="switchTab('lemonade', this)">💬 Chat</button>
         </nav>
     </div>
 
     <!-- 1. Helm Pane -->
     <section id="pane-helm" class="section-pane active">
-        <!-- Hardware Specs Card -->
+        <!-- Device profile card (values come from /api/status) -->
         <div class="card">
             <div class="card-header">
-                <span class="card-title">📱 Samsung Galaxy S25 Ultra</span>
-                <span class="card-badge" style="color:var(--cyan);border-color:var(--cyan);">ONE UI 7 ACTIVE</span>
+                <span class="card-title" id="hwTitle">📱 Device profile</span>
+                <span class="card-badge" style="color:var(--cyan);border-color:var(--cyan);">FROM --device HINT</span>
             </div>
             <div class="hardware-grid">
-                <div class="hw-chip">
-                    <div class="hw-chip-label">Core SoC</div>
-                    <div class="hw-chip-val">Snapdragon 8 Elite</div>
-                </div>
-                <div class="hw-chip">
-                    <div class="hw-chip-label">Vector ISA</div>
-                    <div class="hw-chip-val">ARMv9.2 SVE2</div>
-                </div>
-                <div class="hw-chip">
-                    <div class="hw-chip-label">Neural Engine</div>
-                    <div class="hw-chip-val">Hexagon 45 TOPS</div>
-                </div>
-                <div class="hw-chip">
-                    <div class="hw-chip-label">System RAM</div>
-                    <div class="hw-chip-val">16 GB LPDDR5X</div>
-                </div>
+                <div class="hw-chip"><div class="hw-chip-label">Device</div><div class="hw-chip-val" id="hwDevice">...</div></div>
+                <div class="hw-chip"><div class="hw-chip-label">Tier</div><div class="hw-chip-val" id="hwTier">...</div></div>
+                <div class="hw-chip"><div class="hw-chip-label">RAM</div><div class="hw-chip-val" id="hwRam">...</div></div>
+                <div class="hw-chip"><div class="hw-chip-label">SVE2 / NPU</div><div class="hw-chip-val" id="hwIsa">...</div></div>
             </div>
+            <p style="font-size:0.75rem;color:var(--text-sub);margin-top:8px;">These values are a profile chosen by the --device option. The app does not probe the phone's hardware, and no model runs on its NPU.</p>
         </div>
 
-        <!-- Gemstone Engine Tiers (Lucky's Model Hierarchy) -->
+        <!-- Model endpoints (from /api/providers) -->
         <div class="card">
             <div class="card-header">
-                <span class="card-title">💎 Gemstone Model Tiers</span>
-                <span class="card-badge" id="activeTierBadge">Emerald Active</span>
+                <span class="card-title">🔌 Model endpoints</span>
+                <span class="card-badge" id="providersBadge">...</span>
             </div>
             <p style="font-size:0.8rem;color:var(--text-sub);margin-bottom:10px;">
-                Lucky Robinson's multi-tiered reasoning engine: seamless auto-fallback from on-device NPU to swarm GPUs.
+                Asked in this order; the first that answers wins. If none answer you get an error, never an invented reply. Edit providers.json in the config folder to change the list.
             </p>
-            <div class="gemstone-grid">
-                <div class="gemstone-card active" onclick="selectTier(this, 'Emerald', 'Hexagon NPU')">
-                    <div class="gemstone-name">🟢 Emerald Tier</div>
-                    <div class="gemstone-desc">Snapdragon Hexagon (Qwen2.5-7B-IQ4_XS) • 100% Offline</div>
-                </div>
-                <div class="gemstone-card" onclick="selectTier(this, 'Diamond', 'Remote Cluster')">
-                    <div class="gemstone-name">💎 Diamond Tier</div>
-                    <div class="gemstone-desc">Remote Cluster (cesarops.com/lemonade/v1) • DeepSeek-V4</div>
-                </div>
-                <div class="gemstone-card" onclick="selectTier(this, 'Gold', 'Tesla P100')">
-                    <div class="gemstone-name">🟡 Gold Tier</div>
-                    <div class="gemstone-desc">t440 Swarm (Hermes-3-8B + Qdrant Wayfinder Embedder)</div>
-                </div>
-                <div class="gemstone-card" onclick="selectTier(this, 'Amethyst', 'Bonsai 8B')">
-                    <div class="gemstone-name">🟣 Amethyst Tier</div>
-                    <div class="gemstone-desc">Bonsai 8B Ternary Pure-Rust Lookahead Engine</div>
-                </div>
-            </div>
+            <div id="providersList" style="display:flex;flex-direction:column;gap:8px;"></div>
         </div>
 
-        <!-- Quick Semantic Sniff -->
+        <!-- Quick keyword search -->
         <div class="card">
             <div class="card-header">
-                <span class="card-title">🔍 Quick Semantic Sniff</span>
+                <span class="card-title">🔍 Quick Search (keywords)</span>
             </div>
             <div class="input-group">
-                <input type="text" id="quickSearch" placeholder="Sniff coordinates, shipwreck anomalies, notes..." onkeydown="if(event.key==='Enter') quickSniff()">
+                <input type="text" id="quickSearch" placeholder="Search your notes by words or #tag..." onkeydown="if(event.key==='Enter') quickSniff()">
                 <button class="btn-primary" onclick="quickSniff()">Sniff</button>
             </div>
             <div id="quickSearchResults"></div>
@@ -1031,7 +1003,7 @@
                 <span class="card-badge" id="workModeArmedBadge" style="color:var(--emerald);border-color:var(--emerald);">ARMED</span>
             </div>
             <p style="font-size:0.82rem;color:var(--text-sub);margin-bottom:12px;">
-                Autonomous SMS & text reply engine powered by Lemonade and the fleet's strongest models. Safeguards your time while on operations.
+                Drafts replies to your texts with the model endpoints you configured. Nothing is sent by this app: approved drafts are opened in the phone's SMS composer and you press send. Texts from other people are never given your notes.
             </p>
 
             <div class="switch-row">
@@ -1044,19 +1016,17 @@
 
             <div class="switch-row">
                 <div>
-                    <div class="switch-label">Autonomous Auto-Reply</div>
-                    <div class="switch-sub">Off: Ask before risky actions (Preview & approve drafts). On: Auto-send.</div>
+                    <div class="switch-label">Auto-open composer</div>
+                    <div class="switch-sub">Off: review each draft and approve it. On: new drafts open in the phone composer by themselves (you still press send).</div>
                 </div>
                 <input type="checkbox" id="autoReplyToggle" onchange="updateWorkModeSettings()" style="width:20px;height:20px;accent-color:var(--emerald);">
             </div>
 
             <div style="margin-top:12px;">
-                <label style="font-size:0.78rem;font-weight:700;color:var(--text-sub);text-transform:uppercase;">Fleet Model Target</label>
+                <label style="font-size:0.78rem;font-weight:700;color:var(--text-sub);text-transform:uppercase;">Model endpoints to use</label>
                 <select id="smsModelTarget" onchange="updateWorkModeSettings()" style="width:100%;margin-top:6px;background:#080d1a;border:1px solid var(--border);border-radius:12px;color:var(--text-main);padding:10px;font-size:0.86rem;outline:none;">
-                    <option value="strongest_fleet" selected>⚡ Fleet Strongest (Lemonade Dual-P100 / Paddler Swarm)</option>
-                    <option value="paddler_swarm">🚀 KatCoder-35B-A3B (Paddler Swarm :8080)</option>
-                    <option value="lemonade_p100">⚡ Qwen3-VL-4B Instruct (Lemonade :8001)</option>
-                    <option value="offline">🛡️ NautiK9 Offline Local Engine (Air-Gapped S25 Ultra)</option>
+                    <option value="strongest_fleet" selected>All endpoints, in order</option>
+                    <option value="offline">Offline endpoints only (providers marked offline)</option>
                 </select>
             </div>
 
@@ -1085,21 +1055,21 @@
         <!-- Real-Time Hardware Dispatch Deck -->
         <div class="card">
             <div class="card-header">
-                <span class="card-title">📱 Direct Hardware SMS Dispatch</span>
-                <span class="card-badge" style="color:var(--cyan);border-color:var(--cyan);">S25 ULTRA RADIO</span>
+                <span class="card-title">📱 Open a text in the phone composer</span>
+                <span class="card-badge" style="color:var(--cyan);border-color:var(--cyan);">NO SEND FROM HERE</span>
             </div>
             <p style="font-size:0.8rem;color:var(--text-sub);margin-bottom:10px;">
-                Direct hardware dispatch via Samsung One UI Telephony and ADB intent. Verified raw device pipeline (0 simulations):
+                Opens the phone's own SMS app over adb with the recipient and text filled in. You press send on the phone.
             </p>
             <div style="margin-bottom:8px;">
-                <input type="text" id="directSender" placeholder="Target Phone Number (e.g. +19894613745)...">
+                <input type="text" id="directSender" placeholder="Phone number (e.g. +15555550123)...">
             </div>
             <div style="margin-bottom:8px;">
-                <textarea id="directBody" placeholder="Message content to draft and send via S25 Ultra..."></textarea>
+                <textarea id="directBody" placeholder="Message to draft. Nothing is sent until you press send on the phone."></textarea>
             </div>
             <div style="display:flex;gap:8px;">
-                <button class="btn-primary" onclick="draftDirectSms()" style="flex:1;">⚡ Draft with Fleet Model</button>
-                <button class="btn-primary btn-gold" onclick="sendDirectSms()" style="flex:1;">🚀 Dispatch to Phone</button>
+                <button class="btn-primary" onclick="draftDirectSms()" style="flex:1;">⚡ Draft with model</button>
+                <button class="btn-primary btn-gold" onclick="sendDirectSms()" style="flex:1;">📲 Open in phone composer</button>
             </div>
             <div id="dispatchStatus" style="font-size:0.78rem;margin-top:8px;font-family:'JetBrains Mono',monospace;"></div>
         </div>
@@ -1113,7 +1083,7 @@
                 <span class="card-badge" id="totBudgetBadge">Budget: 12 Calls</span>
             </div>
             <p style="font-size:0.84rem;color:var(--text-sub);margin-bottom:12px;">
-                Multi-branch hypothesis generator with strict automated verifier check scoring (0 simulations).
+                Planned, not built yet. Earlier versions showed a fixed template with made-up verifier results; this now reports that honestly.
             </p>
             <div class="input-group">
                 <input type="text" id="totProblem" value="Survey Thunder Bay Corridor" placeholder="Enter high-level objective..." onkeydown="if(event.key==='Enter') runToT()">
@@ -1121,7 +1091,7 @@
             </div>
             <div id="totTreeContainer" class="tot-tree">
                 <div style="font-size:0.84rem;color:var(--text-sub);text-align:center;padding:12px;">
-                    Tap <strong>Reason</strong> above to dispatch the Verifier Swarm.
+                    Not implemented yet.
                 </div>
             </div>
             <div id="totWinningPlanContainer"></div>
@@ -1137,7 +1107,7 @@
             </div>
             <input type="text" id="noteTitle" placeholder="Note Title (e.g. Thunder Bay Buoy Anomaly)" style="margin-bottom:8px;">
             <input type="text" id="noteTags" placeholder="Tags (comma-separated, e.g. sonar, shipwreck, buoy)" style="margin-bottom:8px;">
-            <textarea id="noteContent" placeholder="Write field observation or mission notes (Markdown supported)..."></textarea>
+            <textarea id="noteContent" placeholder="Write a note. Use [[Another note]] to link and #tag to tag..."></textarea>
             <div style="display:flex;justify-content:flex-end;margin-top:10px;">
                 <button class="btn-primary" onclick="saveNote()">💾 Save to Vault</button>
             </div>
@@ -1148,6 +1118,7 @@
                 <span class="card-title">📂 Vault Archive</span>
                 <button class="btn-mini" onclick="loadNotes()">🔄 Refresh</button>
             </div>
+            <div id="tagFilter" style="margin-bottom:8px;"></div>
             <div id="vaultNotesList" class="notes-list"></div>
         </div>
     </section>
@@ -1196,75 +1167,52 @@
         <!-- Sovereign Swarm Aggregator Card -->
         <div class="card" style="border-color: var(--accent);">
             <div class="card-header">
-                <span class="card-title">⚡ Sovereign GPU Swarm (Amway Blitz)</span>
-                <span class="card-badge" id="swarmClusterStatus" style="color:var(--emerald);border-color:var(--emerald);">6 / 6 NODES ONLINE</span>
+                <span class="card-title">⚡ Fleet (as reported by the aggregator)</span>
+                <span class="card-badge" id="swarmClusterStatus" style="color:var(--emerald);border-color:var(--emerald);">...</span>
             </div>
             <p style="font-size:0.82rem;color:var(--text-sub);margin-bottom:12px;">
-                Federated multi-node compute cluster aggregated by Authoritative Nauti-Fleet (:9122).
+                <span id="fleetSource">Reading the fleet aggregator...</span>
             </p>
 
             <!-- Swarm VRAM Liquid Bar -->
             <div style="background: rgba(15, 23, 42, 0.8); border: 1px solid var(--border); border-radius: 16px; padding: 14px; margin-bottom: 12px;">
                 <div style="display:flex; justify-content:space-between; font-size:0.86rem; font-weight:800; margin-bottom:8px;">
                     <span style="color:var(--cyan);">Swarm Total VRAM Liquidity</span>
-                    <span id="swarmVramText" style="color:var(--text-main); font-family:'JetBrains Mono', monospace;">120.9 / 213.4 GB (57%)</span>
+                    <span id="swarmVramText" style="color:var(--text-main); font-family:'JetBrains Mono', monospace;">-</span>
                 </div>
                 <div class="gpu-bar-bg" style="height:16px;">
-                    <div class="gpu-bar-fill" id="swarmVramBar" style="width:57%;"></div>
+                    <div class="gpu-bar-fill" id="swarmVramBar" style="width:0%;"></div>
                 </div>
                 <div style="display:flex; justify-content:space-between; font-size:0.75rem; color:var(--text-sub); margin-top:6px;">
-                    <span id="swarmGpusActive">13 of 16 GPUs Active</span>
-                    <span id="swarmTempMax">Max Node Temp: 69°C</span>
+                    <span id="swarmGpusActive">-</span>
+                    <span id="swarmTempMax">-</span>
                 </div>
             </div>
 
             <!-- 6 Nodes Swarm Grid -->
             <div style="font-size:0.8rem; font-weight:700; color:var(--text-sub); text-transform:uppercase; margin-bottom:6px;">
-                Fleet Nodes & GPU Inventory (6 Nodes)
+                Fleet nodes & GPU inventory
             </div>
             <div class="fleet-swarm-grid" id="fleetNodesGrid">
                 <!-- Dynamically populated by loadFleetTelemetry() -->
             </div>
         </div>
 
-        <!-- Active Model Routers Card -->
-        <div class="card">
-            <div class="card-header">
-                <span class="card-title">🧠 Active Model & Inference Routers</span>
-                <span class="card-badge" style="color:var(--cyan); border-color:var(--cyan);">ROUTING ACTIVE</span>
-            </div>
-            <div style="display:flex; flex-direction:column; gap:8px;" id="activeRoutersList">
-                <div class="node-mini-card">
-                    <div class="node-name"><span>⚡ Lemonade GPU Engine</span> <span class="badge-status status-autosent">ACTIVE</span></div>
-                    <div class="node-os">http://127.0.0.1:8001/v1 • Dual Tesla P100</div>
-                    <div class="node-gpus">Qwen3-VL-4B Instruct • 91k Context • Multimodal</div>
-                </div>
-                <div class="node-mini-card">
-                    <div class="node-name"><span>🚀 Paddler Swarm Titan</span> <span class="badge-status status-autosent">ACTIVE</span></div>
-                    <div class="node-os">http://127.0.0.1:8080/v1 • Swarm Nodes (:19221 - :19223)</div>
-                    <div class="node-gpus">KatCoder-35B-A3B / Flint-40B / DeepSeek-V4.1</div>
-                </div>
-                <div class="node-mini-card">
-                    <div class="node-name"><span>🌐 Nauti-Fleet Mesh Aggregator</span> <span class="badge-status status-autosent">ACTIVE</span></div>
-                    <div class="node-os">http://127.0.0.1:9122 • Authoritative Mesh Controller</div>
-                    <div class="node-gpus">6 Nodes • 16 GPUs • Real-Time Hardware Telemetry</div>
-                </div>
-            </div>
-        </div>
+        <!-- Model endpoints are listed on the Helm tab (from /api/providers). -->
     </section>
 
     <!-- 6. Lemonade Symmetrical Chat Pane -->
     <section id="pane-lemonade" class="section-pane">
         <div class="card">
             <div class="card-header">
-                <span class="card-title">💬 Lemonade Dual-Mode Engine</span>
+                <span class="card-title">💬 Chat with your model endpoints</span>
                 <label style="font-size:0.78rem;color:var(--text-sub);display:flex;align-items:center;gap:6px;">
-                    <input type="checkbox" id="offlineToggle"> Force Offline Local
+                    <input type="checkbox" id="offlineToggle"> Offline endpoints only
                 </label>
             </div>
             <div class="chat-stream" id="chatStream">
                 <div class="msg-bubble msg-mack">
-                    🐾 Woof! Mack is on the bridge. Ask me anything about your survey notes, boat telemetry, or task status!
+                    🐾 Mack is on the bridge. Ask a question; the answer shows which model and endpoint produced it. If no endpoint answers you will see an error here.
                 </div>
             </div>
             <div class="input-group">
@@ -1275,6 +1223,51 @@
     </section>
 
     <script>
+        // ---- Access token: kept in this browser after the first visit ----
+        const TOKEN_KEY = 'nautik9_token';
+        function getToken() { try { return localStorage.getItem(TOKEN_KEY) || ''; } catch (e) { return window.__n9tok || ''; } }
+        function setToken(t) { try { localStorage.setItem(TOKEN_KEY, t); } catch (e) { window.__n9tok = t; } }
+        (function () {
+            const u = new URL(window.location.href);
+            const t = u.searchParams.get('token');
+            if (t) {
+                setToken(t);
+                u.searchParams.delete('token');
+                history.replaceState(null, '', u.pathname + (u.search || '') + u.hash);
+            }
+        })();
+        const _fetch = window.fetch.bind(window);
+        window.fetch = async function (input, init) {
+            init = init || {};
+            const url = typeof input === 'string' ? input : input.url;
+            if (url.startsWith('/')) {
+                init.headers = Object.assign({}, init.headers || {}, { 'Authorization': 'Bearer ' + getToken() });
+            }
+            const res = await _fetch(input, init);
+            if (res.status === 401 && url.startsWith('/api/') && url !== '/api/health') showTokenPrompt();
+            return res;
+        };
+        function showTokenPrompt() {
+            if (document.getElementById('tokenBanner')) return;
+            const b = document.createElement('div');
+            b.id = 'tokenBanner';
+            b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:#7f1d1d;color:#fff;padding:10px 14px;font-size:0.85rem;';
+            b.innerHTML = 'The server needs an access token. Paste it (file: ~/.config/nautik9/token): <input id="tokenInput" type="password" style="width:55%"> <button onclick="setToken(document.getElementById(\'tokenInput\').value.trim());location.reload()">Save</button>';
+            document.body.appendChild(b);
+        }
+        function esc(v) {
+            return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        }
+        // Mack picture needs the token too, so it is fetched with the header.
+        (async function () {
+            try {
+                const r = await fetch('/assets/mack.jpg');
+                if (r.ok) {
+                    const url = URL.createObjectURL(await r.blob());
+                    document.querySelectorAll('img.avatar-img').forEach(i => i.src = url);
+                }
+            } catch (e) {}
+        })();
         // Audio synthesis for realistic Mack Bark
         function playBarkAudio() {
             try {
@@ -1343,7 +1336,7 @@
             playHaptic();
             const container = document.getElementById('totTreeContainer');
             const planContainer = document.getElementById('totWinningPlanContainer');
-            container.innerHTML = '<div style="font-size:0.85rem;color:#38bdf8;padding:12px;text-align:center;">Evaluating Verifier Swarm branches across 3 hypotheses...</div>';
+            container.innerHTML = '<div style="font-size:0.85rem;color:#38bdf8;padding:12px;text-align:center;">Asking the server...</div>';
             planContainer.innerHTML = '';
 
             try {
@@ -1354,6 +1347,10 @@
                 });
                 const data = await res.json();
                 container.innerHTML = '';
+                if (!res.ok || !data.nodes) {
+                    container.innerHTML = '<div style="font-size:0.85rem;color:var(--rose);padding:12px;">' + esc(data.error || 'Reasoner failed') + '</div>';
+                    return;
+                }
 
                 data.nodes.forEach(node => {
                     const el = document.createElement('div');
@@ -1410,16 +1407,43 @@
             loadNotes();
         }
 
+        let activeTag = '';
+        function renderNoteText(text) {
+            // escape first, then turn [[links]] and #tags into pills
+            return esc(text)
+                .replace(/\[\[([^\]\n]+)\]\]/g, (m, t) => '<span class="tag-pill" style="color:var(--cyan)">' + t.split('|')[0] + '</span>')
+                .replace(/(^|\s)#([A-Za-z][\w\/-]*)/g, (m, sp, t) => sp + '<span class="tag-pill">#' + t + '</span>');
+        }
+        async function loadTags() {
+            try {
+                const data = await (await fetch('/api/tags')).json();
+                const el = document.getElementById('tagFilter');
+                if (!el) return;
+                el.innerHTML = (activeTag ? '<span class="tag-pill" style="cursor:pointer" onclick="filterTag(\'\')">clear filter</span> ' : '') +
+                    data.tags.map(t => '<span class="tag-pill" style="cursor:pointer" onclick="filterTag(\'' + esc(t.tag) + '\')">#' + esc(t.tag) + ' (' + t.count + ')</span>').join(' ');
+            } catch (e) {}
+        }
+        function filterTag(t) { activeTag = t; loadNotes(); }
+        async function showBacklinks(id, btn) {
+            const box = document.getElementById('links-' + id);
+            if (box.dataset.open === '1') { box.innerHTML = ''; box.dataset.open = '0'; return; }
+            const d = await (await fetch('/api/notes/' + encodeURIComponent(id) + '/backlinks')).json();
+            const back = d.backlinks.length ? d.backlinks.map(b => esc(b.title)).join(', ') : 'none';
+            const miss = d.unresolved_links.length ? ' | Links to notes that do not exist: ' + d.unresolved_links.map(esc).join(', ') : '';
+            box.innerHTML = '<div style="font-size:0.78rem;color:var(--text-sub);margin-top:6px;">Linked from: ' + back + miss + '</div>';
+            box.dataset.open = '1';
+        }
         async function loadNotes() {
             try {
-                const res = await fetch('/api/notes');
+                const res = await fetch('/api/notes' + (activeTag ? '?tag=' + encodeURIComponent(activeTag) : ''));
                 const data = await res.json();
                 const container = document.getElementById('vaultNotesList');
                 document.getElementById('noteCountBadge').innerText = data.count + ' Notes';
                 container.innerHTML = '';
+                loadTags();
 
                 if (data.notes.length === 0) {
-                    container.innerHTML = '<div style="font-size:0.85rem;color:#64748b;padding:8px;">No notes in vault yet. Create your first field note above!</div>';
+                    container.innerHTML = '<div style="font-size:0.85rem;color:#64748b;padding:8px;">No notes' + (activeTag ? ' with #' + esc(activeTag) : ' in the vault yet') + '.</div>';
                     return;
                 }
 
@@ -1428,13 +1452,15 @@
                     el.className = 'note-card';
                     el.innerHTML = `
                         <div class="note-title">
-                            <span>${note.title}</span>
-                            <span style="font-size:0.72rem;color:#64748b;">${new Date(note.created_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span>
+                            <span>${esc(note.title)}</span>
+                            <span style="font-size:0.72rem;color:#64748b;">${esc(new Date(note.created_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}))}</span>
                         </div>
-                        <div class="note-snippet">${note.content}</div>
+                        <div class="note-snippet">${renderNoteText(note.content)}</div>
                         <div class="note-tags">
-                            ${note.tags.map(t => `<span class="tag-pill">#${t}</span>`).join('')}
+                            ${note.tags.map(t => `<span class="tag-pill">#${esc(t)}</span>`).join('')}
+                            <button class="btn-mini" onclick="showBacklinks('${esc(note.id)}', this)">Links${note.links && note.links.length ? ' (' + note.links.length + ' out)' : ''}</button>
                         </div>
+                        <div id="links-${esc(note.id)}"></div>
                     `;
                     container.appendChild(el);
                 });
@@ -1447,7 +1473,7 @@
             if (!q) return;
             playHaptic();
             const container = document.getElementById('quickSearchResults');
-            container.innerHTML = '<div style="font-size:0.85rem;color:#38bdf8;padding:6px;">Mack is sniffing vault...</div>';
+            container.innerHTML = '<div style="font-size:0.85rem;color:#38bdf8;padding:6px;">Searching...</div>';
 
             const res = await fetch('/api/search', {
                 method: 'POST',
@@ -1458,15 +1484,15 @@
             container.innerHTML = '';
 
             if (data.results.length === 0) {
-                container.innerHTML = '<div style="font-size:0.85rem;color:#64748b;padding:6px;">0 matching records in vault.</div>';
+                container.innerHTML = '<div style="font-size:0.85rem;color:#64748b;padding:6px;">No notes match those words.</div>';
             } else {
                 data.results.forEach(r => {
                     const el = document.createElement('div');
                     el.className = 'note-card';
                     el.style.marginTop = '8px';
                     el.innerHTML = `
-                        <div class="note-title">${r.title} <span class="tag-pill">${(r.score).toFixed(2)}</span></div>
-                        <div class="note-snippet">${r.snippet}</div>
+                        <div class="note-title">${esc(r.title)} <span class="tag-pill">${(r.score).toFixed(2)}</span></div>
+                        <div class="note-snippet">${esc(r.snippet)}</div>
                     `;
                     container.appendChild(el);
                 });
@@ -1544,7 +1570,7 @@
                     }
                     const badge = document.getElementById('workModeArmedBadge');
                     if (armed) {
-                        badge.innerText = data.work_config.auto_reply ? "AUTONOMOUS AUTO-REPLY" : "ARMED (SAFE REVIEW)";
+                        badge.innerText = data.work_config.auto_reply ? "ARMED (AUTO-OPEN COMPOSER)" : "ARMED (REVIEW EACH DRAFT)";
                         badge.style.color = "var(--emerald)";
                         badge.style.borderColor = "var(--emerald)";
                     } else {
@@ -1558,7 +1584,7 @@
                 container.innerHTML = '';
 
                 if (!data.messages || data.messages.length === 0) {
-                    container.innerHTML = '<div style="font-size:0.82rem;color:var(--text-sub);text-align:center;padding:12px;">No incoming messages found. Tap <strong>Sync Device SMS</strong> to pull live messages from S25 Ultra content://sms/inbox.</div>';
+                    container.innerHTML = '<div style="font-size:0.82rem;color:var(--text-sub);text-align:center;padding:12px;">No incoming messages found. Tap <strong>Sync Device SMS</strong> to read your phone inbox over adb.</div>';
                     return;
                 }
 
@@ -1569,39 +1595,41 @@
                     let statusClass = 'status-pending';
                     let statusLabel = 'PENDING';
                     if (msg.status === 'Drafted') { statusClass = 'status-drafted'; statusLabel = 'DRAFT READY'; }
-                    else if (msg.status === 'AutoSent') { statusClass = 'status-autosent'; statusLabel = 'AUTO-DISPATCHED'; }
-                    else if (msg.status === 'Approved') { statusClass = 'status-approved'; statusLabel = 'SENT TO PHONE'; }
+                    else if (msg.status === 'OpenedInComposer') { statusClass = 'status-autosent'; statusLabel = 'OPENED IN COMPOSER (NOT SENT)'; }
+                    else if (msg.status === 'Approved') { statusClass = 'status-approved'; statusLabel = 'APPROVED'; }
+                    else if (msg.status === 'NoModel') { statusClass = 'status-pending'; statusLabel = 'NO MODEL ANSWERED'; }
                     else if (msg.status === 'Ignored') { statusClass = 'status-pending'; statusLabel = 'IGNORED'; }
 
-                    const modelAttribution = msg.reply_model ? `<span>⚡ ${msg.reply_model} (${msg.latency_ms || 45}ms)</span>` : '';
+                    const modelAttribution = msg.reply_model ? `<span>⚡ ${esc(msg.reply_model)} (${msg.latency_ms == null ? '?' : msg.latency_ms}ms)</span>` : '';
 
                     el.innerHTML = `
                         <div class="sms-head">
-                            <span class="sms-sender">👤 ${msg.sender}</span>
+                            <span class="sms-sender">👤 ${esc(msg.sender)}</span>
                             <div style="display:flex;align-items:center;gap:6px;">
                                 <span class="badge-status ${statusClass}">${statusLabel}</span>
-                                <span class="sms-time">${msg.timestamp}</span>
+                                <span class="sms-time">${esc(msg.timestamp)}</span>
                             </div>
                         </div>
-                        <div class="sms-body">"${msg.body}"</div>
+                        <div class="sms-body">"${esc(msg.body)}"</div>
                         ${msg.draft_reply ? `
                             <div class="sms-draft-box">
                                 <div class="sms-draft-header">
                                     <span>Mack AI Reply</span>
                                     ${modelAttribution}
                                 </div>
-                                <div class="sms-draft-text" id="draft-text-${msg.id}">"${msg.draft_reply}"</div>
+                                <div class="sms-draft-text" id="draft-text-${esc(msg.id)}">"${esc(msg.draft_reply)}"</div>
                             </div>
                         ` : ''}
+                        ${msg.status === 'NoModel' ? `<div class="sms-draft-box"><div class="sms-draft-text" style="color:var(--rose)">No draft: ${esc(msg.draft_error || 'no model endpoint answered')}</div></div>` : ''}
                         <div class="sms-actions">
                             ${msg.status === 'Drafted' ? `
-                                <button class="btn-mini" style="color:var(--emerald);border-color:var(--emerald);" onclick="smsAction('${msg.id}', 'approve')">🚀 Approve & Send to Phone</button>
-                                <button class="btn-mini" onclick="rerollSmsDraft('${msg.id}')">🔄 Reroll Draft</button>
+                                <button class="btn-mini" style="color:var(--emerald);border-color:var(--emerald);" onclick="smsAction('${esc(msg.id)}', 'approve')">📲 Approve & open in phone composer</button>
+                                <button class="btn-mini" onclick="rerollSmsDraft('${esc(msg.id)}')">🔄 Reroll Draft</button>
                             ` : ''}
-                            ${msg.status === 'Pending' ? `
-                                <button class="btn-mini" onclick="rerollSmsDraft('${msg.id}')">⚡ Draft Reply with Fleet Model</button>
+                            ${(msg.status === 'Pending' || msg.status === 'NoModel') ? `
+                                <button class="btn-mini" onclick="rerollSmsDraft('${esc(msg.id)}')">⚡ Draft reply</button>
                             ` : ''}
-                            <button class="btn-mini" onclick="smsAction('${msg.id}', 'ignore')">❌ Dismiss</button>
+                            <button class="btn-mini" onclick="smsAction('${esc(msg.id)}', 'ignore')">❌ Dismiss</button>
                         </div>
                     `;
                     container.appendChild(el);
@@ -1627,13 +1655,13 @@
 
         async function setPreset(presetName) {
             playHaptic();
-            let custom_instructions = "You are Mack AI answering texts for Cesar while he is on active field operations. Be concise, polite, professional, and acknowledge the inquiry.";
+            let custom_instructions = "Be concise, polite, professional, and acknowledge the inquiry.";
             if (presetName === 'Deep Focus') {
-                custom_instructions = "Cesar is in deep focus engineering mode. Please state that messages are logged and emergency priority can be escalated via radio.";
+                custom_instructions = "Thom is in deep focus. Please state that messages are logged and emergency priority can be escalated via radio.";
             } else if (presetName === 'Field Ops') {
-                custom_instructions = "Cesar is on open water field survey operations. Inquire whether their issue concerns vessel navigation or buoy telemetry.";
+                custom_instructions = "Thom is out on the water. Inquire whether their issue concerns vessel navigation or buoy telemetry.";
             } else if (presetName === 'Client Dispatch') {
-                custom_instructions = "Polite corporate response confirming Cesar has received their inquiry and will follow up after dock arrival.";
+                custom_instructions = "Polite corporate response confirming Thom has received their inquiry and will follow up after dock arrival.";
             }
 
             try {
@@ -1656,7 +1684,7 @@
                 });
                 const data = await res.json();
                 if (data.dispatch_result) {
-                    console.log("Dispatch result:", data.dispatch_result);
+                    alert(data.dispatch_result);
                 }
                 loadSmsInbox();
             } catch (e) {}
@@ -1665,7 +1693,7 @@
         async function rerollSmsDraft(id) {
             playHaptic();
             const draftEl = document.getElementById('draft-text-' + id);
-            if (draftEl) draftEl.innerText = "Drafting with fleet strongest model...";
+            if (draftEl) draftEl.innerText = "Drafting...";
             await smsAction(id, 'regenerate');
         }
 
@@ -1675,7 +1703,7 @@
             if (!sender || !body) return;
             playHaptic();
             const statusEl = document.getElementById('dispatchStatus');
-            statusEl.innerText = "⏳ Drafting with Lemonade dual-P100 / Paddler swarm...";
+            statusEl.innerText = "Drafting...";
             statusEl.style.color = "var(--accent)";
             try {
                 const res = await fetch('/api/sms/incoming', {
@@ -1684,8 +1712,13 @@
                     body: JSON.stringify({ sender, body })
                 });
                 const data = await res.json();
-                statusEl.innerText = `Drafted via ${data.message.reply_model} (${data.message.latency_ms}ms)`;
-                statusEl.style.color = "var(--emerald)";
+                if (data.message.status === 'NoModel') {
+                    statusEl.innerText = 'No draft: ' + (data.message.draft_error || 'no model endpoint answered');
+                    statusEl.style.color = "var(--rose)";
+                } else {
+                    statusEl.innerText = `Drafted via ${data.message.reply_model} (${data.message.latency_ms}ms)`;
+                    statusEl.style.color = "var(--emerald)";
+                }
                 loadSmsInbox(false);
             } catch (e) {
                 statusEl.innerText = "Error drafting: " + e;
@@ -1699,7 +1732,7 @@
             if (!sender || !body) return;
             playHaptic();
             const statusEl = document.getElementById('dispatchStatus');
-            statusEl.innerText = "🚀 Dispatching intent to S25 Ultra radio...";
+            statusEl.innerText = "Opening the phone SMS composer...";
             statusEl.style.color = "var(--gold)";
             try {
                 const res = await fetch('/api/sms/incoming', {
@@ -1715,56 +1748,84 @@
                         body: JSON.stringify({ id: data.message.id, action: 'approve' })
                     });
                     const actData = await actRes.json();
-                    statusEl.innerText = actData.dispatch_result || "Dispatched to S25 Ultra!";
+                    statusEl.innerText = actData.dispatch_result || "Done";
                     statusEl.style.color = "var(--emerald)";
                 }
                 loadSmsInbox(false);
             } catch (e) {
-                statusEl.innerText = "Dispatch error: " + e;
+                statusEl.innerText = "Error: " + e;
                 statusEl.style.color = "var(--rose)";
             }
         }
 
         // Fleet Telemetry (All 6 Nodes & 16 GPUs)
         async function loadFleetTelemetry() {
+            const src = document.getElementById('fleetSource');
+            const grid = document.getElementById('fleetNodesGrid');
             try {
                 const res = await fetch('/api/fleet/status');
                 const data = await res.json();
-                
+                if (!res.ok || data.ok === false) {
+                    src.innerText = 'Fleet aggregator error: ' + (data.error || ('HTTP ' + res.status));
+                    src.style.color = 'var(--rose)';
+                    document.getElementById('swarmClusterStatus').innerText = 'NO DATA';
+                    grid.innerHTML = '';
+                    return;
+                }
+                src.innerText = 'Source: ' + data.source;
+                src.style.color = '';
                 if (data.summary) {
                     const s = data.summary;
                     const usedGb = (s.vram_used_bytes / (1024**3)).toFixed(1);
                     const totalGb = (s.vram_total_bytes / (1024**3)).toFixed(1);
-                    const pct = Math.round((s.vram_used_bytes / s.vram_total_bytes) * 100);
-
+                    const pct = s.vram_total_bytes ? Math.round((s.vram_used_bytes / s.vram_total_bytes) * 100) : 0;
                     document.getElementById('swarmVramText').innerText = `${usedGb} / ${totalGb} GB (${pct}%)`;
                     document.getElementById('swarmVramBar').style.width = pct + '%';
-                    document.getElementById('swarmGpusActive').innerText = `${s.gpus_busy} of ${s.gpus_total} GPUs Active`;
-                    document.getElementById('swarmTempMax').innerText = `Max Node Temp: ${s.max_temp_c}°C`;
-                    document.getElementById('swarmClusterStatus').innerText = `${s.nodes_reachable} / ${s.nodes_total} NODES ONLINE`;
+                    document.getElementById('swarmGpusActive').innerText = `${s.gpus_busy} of ${s.gpus_total} GPUs busy`;
+                    document.getElementById('swarmTempMax').innerText = `Max temp: ${s.max_temp_c}°C`;
+                    document.getElementById('swarmClusterStatus').innerText = `${s.nodes_reachable} / ${s.nodes_total} NODES REACHABLE`;
                 }
+                grid.innerHTML = '';
+                (data.nodes || []).forEach(node => {
+                    const el = document.createElement('div');
+                    el.className = 'node-mini-card';
+                    el.innerHTML = `
+                        <div class="node-name">
+                            <span>${esc(node.name)}</span>
+                            <span class="badge-status ${node.reachable ? 'status-autosent' : 'status-pending'}">${node.reachable ? 'UP' : 'DOWN'}</span>
+                        </div>
+                        <div class="node-os">${esc(node.os)}</div>
+                        <div class="node-gpus">🎮 ${esc(node.gpus)} ${node.gpus === 1 ? 'GPU' : 'GPUs'}</div>
+                    `;
+                    grid.appendChild(el);
+                });
+            } catch (e) {
+                src.innerText = 'Fleet status failed: ' + e;
+                src.style.color = 'var(--rose)';
+            }
+        }
 
-                if (data.nodes && data.nodes.length > 0) {
-                    const grid = document.getElementById('fleetNodesGrid');
-                    grid.innerHTML = '';
-                    data.nodes.forEach(node => {
-                        const el = document.createElement('div');
-                        el.className = 'node-mini-card';
-                        el.innerHTML = `
-                            <div class="node-name">
-                                <span>${node.name}</span>
-                                <span class="badge-status ${node.reachable ? 'status-autosent' : 'status-pending'}">${node.reachable ? 'UP' : 'DOWN'}</span>
-                            </div>
-                            <div class="node-os">${node.os}</div>
-                            <div class="node-gpus">🎮 ${node.gpus} ${node.gpus === 1 ? 'GPU' : 'GPUs'}</div>
-                        `;
-                        grid.appendChild(el);
-                    });
-                }
+        async function loadDeviceAndProviders() {
+            try {
+                const st = await (await fetch('/api/status')).json();
+                document.getElementById('hwDevice').innerText = st.device;
+                document.getElementById('hwTier').innerText = st.tier;
+                document.getElementById('hwRam').innerText = (st.ram_mb / 1024).toFixed(0) + ' GB';
+                document.getElementById('hwIsa').innerText = (st.sve2 ? 'SVE2' : 'no SVE2') + ' / ' + (st.npu ? 'NPU' : 'no NPU');
+            } catch (e) {}
+            try {
+                const pr = await (await fetch('/api/providers')).json();
+                document.getElementById('providersBadge').innerText = pr.providers.length + ' endpoint(s)';
+                document.getElementById('providersList').innerHTML = pr.providers.map((p, i) => `
+                    <div class="node-mini-card">
+                        <div class="node-name"><span>${i + 1}. ${esc(p.name)}</span>${p.offline ? '<span class="badge-status status-pending">OFFLINE-OK</span>' : ''}</div>
+                        <div class="node-os">${esc(p.base_url)}</div>
+                        <div class="node-gpus">model: ${esc(p.model || 'whatever the server reports loaded')}</div>
+                    </div>`).join('');
             } catch (e) {}
         }
 
-        // Chat with Lemonade Model
+        // Chat with the model endpoints
         async function doChat() {
             const input = document.getElementById('chatInput');
             const p = input.value.trim();
@@ -1792,20 +1853,22 @@
                     body: JSON.stringify({ prompt: p, offline: offline })
                 });
                 const data = await res.json();
-                
-                let attribution = "";
-                if (data.model_used) {
-                    attribution = `\n\n[Powered by: ${data.model_used} • ${data.duration_ms || 40}ms]`;
+                if (!res.ok || data.ok === false) {
+                    mackMsg.innerText = 'No model answered (' + res.status + '): ' + (data.error || res.statusText) +
+                        (data.attempts && data.attempts.length ? '\n' + data.attempts.join('\n') : '');
+                    mackMsg.style.borderColor = 'var(--rose)';
+                } else {
+                    mackMsg.innerText = data.response + `\n\n[${data.model_used} • ${data.duration_ms}ms]`;
                 }
-                mackMsg.innerText = data.response + attribution;
             } catch (e) {
-                mackMsg.innerText = "Woof! Unable to reach Lemonade bridge.";
+                mackMsg.innerText = 'Request failed: ' + e;
             }
             stream.scrollTop = stream.scrollHeight;
         }
 
         // Auto initialization
         initSensors();
+        loadDeviceAndProviders();
         loadNotes();
         loadSmsInbox();
         loadFleetTelemetry();

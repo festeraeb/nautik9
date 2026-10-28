@@ -20,6 +20,99 @@ pub struct VaultItem {
     pub content: String,
     pub tags: Vec<String>,
     pub created_at: String,
+    /// `[[link]]` targets found in the content (names or ids), in order, unique.
+    #[serde(default)]
+    pub links: Vec<String>,
+}
+
+/// Blank out fenced code blocks and inline code so links/tags inside them are ignored.
+fn strip_code(content: &str) -> String {
+    let mut out = String::with_capacity(content.len());
+    let mut in_fence = false;
+    for line in content.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            out.push('\n');
+            continue;
+        }
+        if in_fence {
+            out.push('\n');
+            continue;
+        }
+        let mut in_tick = false;
+        for ch in line.chars() {
+            if ch == '`' {
+                in_tick = !in_tick;
+                out.push(' ');
+            } else if in_tick {
+                out.push(' ');
+            } else {
+                out.push(ch);
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// `[[Note]]`, `[[Note|Label]]`, `[[Note#Heading]]` -> "Note". Unique, in order.
+pub fn parse_links(content: &str) -> Vec<String> {
+    let text = strip_code(content);
+    let mut links: Vec<String> = Vec::new();
+    let mut rest = text.as_str();
+    while let Some(start) = rest.find("[[") {
+        let after = &rest[start + 2..];
+        let Some(end) = after.find("]]") else { break };
+        let inner = &after[..end];
+        if !inner.contains('\n') {
+            let target = inner.split('|').next().unwrap_or("").split('#').next().unwrap_or("").trim();
+            if !target.is_empty() && !links.iter().any(|l| l.eq_ignore_ascii_case(target)) {
+                links.push(target.to_string());
+            }
+        }
+        rest = &after[end + 2..];
+    }
+    links
+}
+
+/// `#tag` / `#project/client`: starts with a letter, then word chars, `/`, `-`.
+/// Must follow whitespace or an opening bracket (so URLs and headings are not tags).
+pub fn parse_tags(content: &str) -> Vec<String> {
+    let text = strip_code(content);
+    let chars: Vec<char> = text.chars().collect();
+    let mut tags: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '#' && (i == 0 || chars[i - 1].is_whitespace() || "([{".contains(chars[i - 1])) {
+            if i + 1 < chars.len() && chars[i + 1].is_alphabetic() {
+                let mut j = i + 1;
+                while j < chars.len() && (chars[j].is_alphanumeric() || chars[j] == '_' || chars[j] == '/' || chars[j] == '-') {
+                    j += 1;
+                }
+                let tag: String = chars[i + 1..j].iter().collect::<String>().trim_end_matches(['/', '-']).to_string();
+                let tag = tag.to_lowercase();
+                if !tag.is_empty() && !tags.contains(&tag) {
+                    tags.push(tag);
+                }
+                i = j;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    tags
+}
+
+/// Explicit tags plus `#tags` found in the content, lowercased, unique.
+pub fn merge_tags(explicit: &[String], content: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for t in explicit.iter().cloned().chain(parse_tags(content)) {
+        let t = t.trim().trim_start_matches('#').to_lowercase();
+        if !t.is_empty() && !out.contains(&t) {
+            out.push(t);
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,7 +202,8 @@ impl WayfinderVault {
         embedding: Option<&[f32]>,
     ) -> Result<(), NautikError> {
         let conn = self.conn.lock().await;
-        let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_string());
+        let tags = merge_tags(tags, content);
+        let tags_json = serde_json::to_string(&tags).unwrap_or_else(|_| "[]".to_string());
         let now = Utc::now().to_rfc3339();
 
         let embedding_bytes = embedding.map(|vec| {
@@ -130,7 +224,7 @@ impl WayfinderVault {
         Ok(())
     }
 
-    /// Search items by query using keyword matching and cosine similarity
+    /// Keyword search (title/content/tags) plus a weak hash-fingerprint similarity. Not semantic.
     pub async fn search(&self, query: &str, query_embedding: Option<&[f32]>, top_k: usize) -> Result<Vec<SearchResultItem>, NautikError> {
         let conn = self.conn.lock().await;
         let mut stmt = conn
@@ -159,7 +253,7 @@ impl WayfinderVault {
 
             let mut score = 0.0f32;
 
-            // 1. Keyword & Semantic Token Match
+            // 1. Keyword match (title, content, tags)
             let title_lower = title.to_lowercase();
             let content_lower = content.to_lowercase();
             for word in &query_words {
@@ -176,7 +270,7 @@ impl WayfinderVault {
                 }
             }
 
-            // 2. Cosine Vector Similarity (if embeddings exist)
+            // 2. Cosine similarity of the hash fingerprints (weak, lexical signal)
             if let (Some(q_emb), Some(blob)) = (query_embedding, embedding_blob) {
                 if blob.len() >= q_emb.len() * 4 {
                     let mut doc_emb = Vec::with_capacity(q_emb.len());
@@ -253,15 +347,73 @@ impl WayfinderVault {
         for r in rows {
             let (id, title, content, tags_json, created_at) = r.map_err(|e| NautikError::Storage(e.to_string()))?;
             let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+            // Notes saved before tag parsing existed still get their #tags.
+            let tags = merge_tags(&tags, &content);
+            let links = parse_links(&content);
             items.push(VaultItem {
                 id,
                 title,
                 content,
                 tags,
                 created_at,
+                links,
             });
         }
         Ok(items)
+    }
+
+    /// Notes whose `[[links]]` point at `id` (matched by id or, case-insensitively, by title).
+    pub async fn backlinks(&self, id: &str) -> Result<Vec<VaultItem>, NautikError> {
+        let items = self.list_items().await?;
+        let Some(target) = items.iter().find(|i| i.id == id) else {
+            return Ok(Vec::new());
+        };
+        let (tid, ttitle) = (target.id.clone(), target.title.clone());
+        Ok(items
+            .into_iter()
+            .filter(|n| n.id != tid)
+            .filter(|n| n.links.iter().any(|l| l == &tid || l.eq_ignore_ascii_case(&ttitle)))
+            .collect())
+    }
+
+    /// Link targets in `id`'s content that match no note (id or title).
+    pub async fn unresolved_links(&self, id: &str) -> Result<Vec<String>, NautikError> {
+        let items = self.list_items().await?;
+        let Some(note) = items.iter().find(|i| i.id == id) else {
+            return Ok(Vec::new());
+        };
+        Ok(note
+            .links
+            .iter()
+            .filter(|l| !items.iter().any(|i| &i.id == *l || i.title.eq_ignore_ascii_case(l)))
+            .cloned()
+            .collect())
+    }
+
+    /// Every tag with the number of notes using it, most used first.
+    pub async fn list_tags(&self) -> Result<Vec<(String, usize)>, NautikError> {
+        let items = self.list_items().await?;
+        let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        for n in &items {
+            for t in &n.tags {
+                *counts.entry(t.clone()).or_insert(0) += 1;
+            }
+        }
+        let mut v: Vec<(String, usize)> = counts.into_iter().collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        Ok(v)
+    }
+
+    /// Notes carrying `tag` (a parent tag also matches nested tags: `project` finds `project/client`).
+    pub async fn notes_with_tag(&self, tag: &str) -> Result<Vec<VaultItem>, NautikError> {
+        let tag = tag.trim_start_matches('#').to_lowercase();
+        let nested = format!("{}/", tag);
+        Ok(self
+            .list_items()
+            .await?
+            .into_iter()
+            .filter(|n| n.tags.iter().any(|t| *t == tag || t.starts_with(&nested)))
+            .collect())
     }
 
     /// Delete an item by ID
@@ -292,7 +444,12 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     dot / (norm_a.sqrt() * norm_b.sqrt())
 }
 
-/// Fast on-device pseudo-embedding generator for offline zero-alloc similarity
+/// A character-position hash fingerprint of the text, L2-normalised.
+///
+/// This is NOT a semantic embedding: it only rewards texts that share the same
+/// bytes at similar positions. Vault search combines it with keyword matching,
+/// so call the result keyword search, not semantic search. Real embeddings
+/// (embeddinggemma via an OpenAI-compatible /embeddings endpoint) are planned.
 pub fn generate_fast_embedding(text: &str, dim: usize) -> Vec<f32> {
     let mut vec = vec![0.0f32; dim];
     if text.is_empty() {
@@ -312,7 +469,7 @@ pub fn generate_fast_embedding(text: &str, dim: usize) -> Vec<f32> {
     vec
 }
 
-/// Task Decomposer: breaks high-level goals into 8 actionable field / code steps
+/// A FIXED 8-step checklist with the task name filled in. It does not read the task or call a model.
 pub fn decompose_task(task_description: &str) -> Vec<String> {
     vec![
         format!("1. Define objective & constraints for '{}'", task_description),
@@ -322,125 +479,8 @@ pub fn decompose_task(task_description: &str) -> Vec<String> {
         "5. Execute primary survey or code generation pass".to_string(),
         "6. Validate outputs against strict ground truth (no synthetic fallbacks)".to_string(),
         "7. Update Mack companion avatar status & post mission log to vault".to_string(),
-        "8. Sync telemetry to CesarOps Fleet or trigger offline persistence".to_string(),
+        "8. Sync telemetry to the fleet endpoint, if one is configured".to_string(),
     ]
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ThoughtNode {
-    pub id: String,
-    pub parent_id: Option<String>,
-    pub label: String,
-    pub hypothesis: String,
-    pub score: f32,
-    pub status: String, // "exploring", "verified", "pruned", "promoted"
-    pub verifier_checks: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TreeOfThoughtsResult {
-    pub problem: String,
-    pub budget_used: usize,
-    pub max_budget: usize,
-    pub winning_branch_id: String,
-    pub winning_plan: Vec<String>,
-    pub nodes: Vec<ThoughtNode>,
-}
-
-/// Tree of Thoughts (ToT) reasoning harness with verifier scoring and branch pruning
-pub fn run_tree_of_thoughts(problem: &str, max_budget: usize) -> TreeOfThoughtsResult {
-    let budget = max_budget.min(20).max(4);
-
-    let root = ThoughtNode {
-        id: "node-root".to_string(),
-        parent_id: None,
-        label: "Problem Root".to_string(),
-        hypothesis: problem.to_string(),
-        score: 1.0,
-        status: "verified".to_string(),
-        verifier_checks: vec![
-            "Goal formulated & parsed".to_string(),
-            "Constraint: No synthetic fallbacks / simulations".to_string(),
-        ],
-    };
-
-    let branch_a = ThoughtNode {
-        id: "node-A".to_string(),
-        parent_id: Some("node-root".to_string()),
-        label: "Branch A: Direct Sequential".to_string(),
-        hypothesis: format!("Execute '{}' sequentially in a single pass without verification guards.", problem),
-        score: 0.58,
-        status: "pruned".to_string(),
-        verifier_checks: vec![
-            "Syntax Check: PASS".to_string(),
-            "Error Recovery Guard: FAIL (no rollback)".to_string(),
-            "Hardware Budget: PASS".to_string(),
-        ],
-    };
-
-    let branch_b = ThoughtNode {
-        id: "node-B".to_string(),
-        parent_id: Some("node-root".to_string()),
-        label: "Branch B: Multi-Tier Verifier Swarm".to_string(),
-        hypothesis: format!("Decompose '{}' into verifiable checkpoints with automated ground-truth verifiers.", problem),
-        score: 0.95,
-        status: "promoted".to_string(),
-        verifier_checks: vec![
-            "Wayfinder Vault Citation: PASS (95% match)".to_string(),
-            "Dual-Mode Bridge Check: PASS (local Qwen2.5 / remote cluster)".to_string(),
-            "Hardware Feasibility: PASS (S25 Ultra Snapdragon 8 Elite)".to_string(),
-        ],
-    };
-
-    let branch_c = ThoughtNode {
-        id: "node-C".to_string(),
-        parent_id: Some("node-root".to_string()),
-        label: "Branch C: Speculative Parallel".to_string(),
-        hypothesis: format!("Speculatively evaluate exploratory paths for '{}' with unconstrained generation.", problem),
-        score: 0.69,
-        status: "pruned".to_string(),
-        verifier_checks: vec![
-            "Exploration Breadth: PASS".to_string(),
-            "Deterministic Repeatability: FAIL (variance > 0.4)".to_string(),
-            "Strict Ground Truth: PASS".to_string(),
-        ],
-    };
-
-    let b_step1 = ThoughtNode {
-        id: "node-B1".to_string(),
-        parent_id: Some("node-B".to_string()),
-        label: "Phase 1: Pre-flight Audit".to_string(),
-        hypothesis: "Probe hardware profile and ingest context from Wayfinder vault.".to_string(),
-        score: 0.97,
-        status: "promoted".to_string(),
-        verifier_checks: vec!["Vault lookup verified".to_string(), "Telemetry link green".to_string()],
-    };
-
-    let b_step2 = ThoughtNode {
-        id: "node-B2".to_string(),
-        parent_id: Some("node-B".to_string()),
-        label: "Phase 2: Verifier Gating".to_string(),
-        hypothesis: "Execute core logic with automated verification checks before state commit.".to_string(),
-        score: 0.94,
-        status: "promoted".to_string(),
-        verifier_checks: vec!["Unit test & contract verified".to_string(), "Strict no-sim check passed".to_string()],
-    };
-
-    let winning_plan = vec![
-        format!("1. Pre-flight Telemetry: Inspect hardware profile and Wayfinder vault for '{}'", problem),
-        "2. Multi-Candidate Synthesis: Generate and score 3 distinct implementation branches".to_string(),
-        "3. Verifier Audit: Filter branches through strict validation (0 simulations, verified citations)".to_string(),
-        "4. Commitment & Rollout: Promote Branch B and dispatch execution to Lemonade engine".to_string(),
-    ];
-
-    TreeOfThoughtsResult {
-        problem: problem.to_string(),
-        budget_used: (budget / 2).max(4),
-        max_budget: budget,
-        winning_branch_id: "node-B".to_string(),
-        winning_plan,
-        nodes: vec![root, branch_a, branch_b, branch_c, b_step1, b_step2],
-    }
 }
 
 /// The Wayfinder NautiK9 Module
@@ -638,5 +678,46 @@ mod tests {
         let avatar = ctx.avatar.read().await;
         assert_eq!(avatar.current_state, MackState::TargetLocked);
         assert!(avatar.status_message.contains("Target match found"));
+    }
+
+    #[test]
+    fn parses_links_aliases_and_ignores_code() {
+        let c = "See [[Alpha]] and [[Beta|the beta]] and [[Alpha#Intro]].\n`[[InCode]]`\n```\n[[Fenced]]\n```\n[[ ]] [[broken";
+        assert_eq!(parse_links(c), vec!["Alpha", "Beta"]);
+    }
+
+    #[test]
+    fn parses_tags_not_headings_urls_or_code() {
+        let c = "# Heading\nwork #Project/client and (#sonar) but http://x.org/#anchor and `#code` #1 #-x\n#end-";
+        assert_eq!(parse_tags(c), vec!["project/client", "sonar", "end"]);
+    }
+
+    #[tokio::test]
+    async fn tags_are_added_on_save_and_listed() {
+        let v = WayfinderVault::in_memory().unwrap();
+        v.put_item("a", "Alpha", "text #sonar #project/x", &["Manual".to_string()], None).await.unwrap();
+        v.put_item("b", "Beta", "more #sonar", &[], None).await.unwrap();
+        let tags = v.list_tags().await.unwrap();
+        assert_eq!(tags[0], ("sonar".to_string(), 2));
+        assert!(tags.contains(&("manual".to_string(), 1)));
+        let by = v.notes_with_tag("project").await.unwrap();
+        assert_eq!(by.len(), 1);
+        assert_eq!(by[0].id, "a");
+        assert!(by[0].tags.contains(&"sonar".to_string()));
+    }
+
+    #[tokio::test]
+    async fn backlinks_and_unresolved_links() {
+        let v = WayfinderVault::in_memory().unwrap();
+        v.put_item("a", "Alpha", "links to [[beta]] and [[Missing]]", &[], None).await.unwrap();
+        v.put_item("b", "Beta", "links back [[Alpha|a]]", &[], None).await.unwrap();
+        v.put_item("c", "Gamma", "by id [[b]]", &[], None).await.unwrap();
+        let back_b: Vec<String> = v.backlinks("b").await.unwrap().into_iter().map(|n| n.id).collect();
+        assert_eq!(back_b.len(), 2);
+        assert!(back_b.contains(&"a".to_string()) && back_b.contains(&"c".to_string()));
+        let back_a: Vec<String> = v.backlinks("a").await.unwrap().into_iter().map(|n| n.id).collect();
+        assert_eq!(back_a, vec!["b".to_string()]);
+        assert_eq!(v.unresolved_links("a").await.unwrap(), vec!["Missing".to_string()]);
+        assert!(v.backlinks("nope").await.unwrap().is_empty());
     }
 }

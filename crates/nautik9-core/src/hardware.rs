@@ -118,7 +118,7 @@ impl HardwareProfile {
 
     pub fn desktop_workstation() -> Self {
         Self {
-            device_name: "Host Workstation / Swarm Coordinator (t440)".to_string(),
+            device_name: "Host Workstation / Desktop host".to_string(),
             tier: DeviceTier::FlagshipHighEnd,
             cpu_cores: 8,
             ram_mb: 32768,

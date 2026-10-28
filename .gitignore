@@ -5,6 +5,6 @@ phone_sync/
 *.db-wal
 *.db-shm
 phone_screen.png
-# Personal photo; ships only if the operator says so.
-assets/mack_avatar.jpg
 target/
+serve.log
+*.log

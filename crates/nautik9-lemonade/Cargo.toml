@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Dual-mode Lemonade client: streaming SSE to cesarops.com/lemonade/v1 and offline on-device fallback"
+description = "Ordered chain of OpenAI-compatible model endpoints (Lemonade, Paddler, any other)"
 
 [dependencies]
 nautik9-core = { path = "../nautik9-core" }
@@ -21,3 +21,4 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.10"
+axum = "0.8.9"
