@@ -3,12 +3,14 @@ pub mod error;
 pub mod event;
 pub mod hardware;
 pub mod module;
+pub mod sms;
 
 pub use avatar::{AvatarStatus, MackState};
 pub use error::NautikError;
 pub use event::{EventPayload, NautikEvent, SearchResultItem};
 pub use hardware::{DeviceTier, HardwareProfile};
 pub use module::{ModuleContext, ModuleRegistry, NautikModule};
+pub use sms::{SmsMessage, SmsStatus, WorkModeConfig};
 
 #[cfg(test)]
 mod tests {

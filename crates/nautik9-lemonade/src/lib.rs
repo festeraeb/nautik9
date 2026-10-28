@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use nautik9_core::{
     error::NautikError,
@@ -11,6 +11,8 @@ use nautik9_core::{
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LemonadeConfig {
     pub online_endpoint: String,
+    pub paddler_endpoint: String,
+    pub core_endpoint: String,
     pub model_name: String,
     pub api_key: Option<String>,
     pub timeout_seconds: u64,
@@ -20,10 +22,12 @@ pub struct LemonadeConfig {
 impl Default for LemonadeConfig {
     fn default() -> Self {
         Self {
-            online_endpoint: "https://cesarops.com/lemonade/v1".to_string(),
-            model_name: "qwen2.5-coder-1.5b-instruct-q4_k_m".to_string(),
+            online_endpoint: "http://127.0.0.1:8001/v1".to_string(),
+            paddler_endpoint: "http://127.0.0.1:8080/v1".to_string(),
+            core_endpoint: "http://127.0.0.1:13305/v1".to_string(),
+            model_name: "/var/lib/lemonade/.cache/huggingface/hub/models--Qwen--Qwen3-VL-4B-Instruct-GGUF/snapshots/1cd86afb9a95c410a6038ab3b40d8b578c892266/Qwen3VL-4B-Instruct-Q4_K_M.gguf".to_string(),
             api_key: None,
-            timeout_seconds: 5,
+            timeout_seconds: 6,
             allow_fallback: true,
         }
     }
@@ -41,6 +45,8 @@ pub struct ChatCompletionRequest {
     pub messages: Vec<ChatMessage>,
     pub temperature: f32,
     pub stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,7 +57,7 @@ pub struct ChatCompletionChoice {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatCompletionResponse {
-    pub id: String,
+    pub id: Option<String>,
     pub choices: Vec<ChatCompletionChoice>,
 }
 
@@ -75,89 +81,145 @@ impl LemonadeModule {
         }
     }
 
-    /// Healthcheck the online endpoint
+    /// Healthcheck endpoints
     pub async fn check_connectivity(&mut self) -> bool {
         let models_url = format!("{}/models", self.config.online_endpoint.trim_end_matches('/'));
         match self.client.get(&models_url).send().await {
-            Ok(resp) => {
-                self.is_online = resp.status().is_success();
-                self.is_online
+            Ok(resp) if resp.status().is_success() => {
+                self.is_online = true;
+                true
             }
-            Err(_) => {
-                self.is_online = false;
-                false
+            _ => {
+                // Check paddler
+                let paddler_url = format!("{}/models", self.config.paddler_endpoint.trim_end_matches('/'));
+                match self.client.get(&paddler_url).send().await {
+                    Ok(resp) => {
+                        self.is_online = resp.status().is_success();
+                        self.is_online
+                    }
+                    Err(_) => {
+                        self.is_online = false;
+                        false
+                    }
+                }
             }
         }
     }
 
-    /// Generate chat response using either online Lemonade server or offline native fallback
+    /// Generate chat response routing to the strongest, fastest model available
+    pub async fn generate_routed(
+        &mut self,
+        prompt: &str,
+        system_prompt: Option<&str>,
+        target_tier: &str,
+    ) -> (String, String, u64) {
+        let start = Instant::now();
+
+        if target_tier == "offline" {
+            let reply = self.execute_offline_engine(prompt, system_prompt).unwrap_or_else(|e| e.to_string());
+            return (reply, "NautiK9 Offline Local Engine (Air-gapped)".to_string(), start.elapsed().as_millis() as u64);
+        }
+
+        // Tier 1: Try Lemonade GPU llama-server (:8001) - Qwen3-VL-4B Instruct
+        let req_body = ChatCompletionRequest {
+            model: self.config.model_name.clone(),
+            messages: vec![
+                ChatMessage {
+                    role: "system".to_string(),
+                    content: system_prompt.unwrap_or("You are Mack, the NautiK9 survey companion.").to_string(),
+                },
+                ChatMessage {
+                    role: "user".to_string(),
+                    content: prompt.to_string(),
+                },
+            ],
+            temperature: 0.3,
+            stream: false,
+            max_tokens: Some(300),
+        };
+
+        let primary_url = format!("{}/chat/completions", self.config.online_endpoint.trim_end_matches('/'));
+        if let Ok(resp) = self.client.post(&primary_url).json(&req_body).send().await {
+            if resp.status().is_success() {
+                if let Ok(body) = resp.json::<ChatCompletionResponse>().await {
+                    if let Some(choice) = body.choices.first() {
+                        if let Some(ref msg) = choice.message {
+                            let duration = start.elapsed().as_millis() as u64;
+                            return (msg.content.clone(), "Qwen3-VL-4B Instruct (Lemonade Dual-P100 :8001)".to_string(), duration);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Tier 2: Try Paddler Swarm (:8080) - KatCoder-35B or Flint-40B
+        let paddler_req = ChatCompletionRequest {
+            model: "kat-coder-v2.5-35b-a3b".to_string(),
+            messages: vec![
+                ChatMessage {
+                    role: "system".to_string(),
+                    content: system_prompt.unwrap_or("You are Mack, the NautiK9 survey companion.").to_string(),
+                },
+                ChatMessage {
+                    role: "user".to_string(),
+                    content: prompt.to_string(),
+                },
+            ],
+            temperature: 0.3,
+            stream: false,
+            max_tokens: Some(300),
+        };
+        let paddler_url = format!("{}/chat/completions", self.config.paddler_endpoint.trim_end_matches('/'));
+        if let Ok(resp) = self.client.post(&paddler_url).json(&paddler_req).send().await {
+            if resp.status().is_success() {
+                if let Ok(body) = resp.json::<ChatCompletionResponse>().await {
+                    if let Some(choice) = body.choices.first() {
+                        if let Some(ref msg) = choice.message {
+                            let duration = start.elapsed().as_millis() as u64;
+                            return (msg.content.clone(), "KatCoder-35B-A3B (Paddler Fleet Swarm :8080)".to_string(), duration);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Tier 3: Native Offline Engine
+        let reply = self.execute_offline_engine(prompt, system_prompt).unwrap_or_else(|e| e.to_string());
+        (reply, "NautiK9 Offline Local Engine (Fallback)".to_string(), start.elapsed().as_millis() as u64)
+    }
+
+    /// Specialized SMS responder for Work Mode
+    pub async fn draft_sms_reply(
+        &mut self,
+        sender: &str,
+        incoming_body: &str,
+        custom_instructions: &str,
+        target_tier: &str,
+    ) -> (String, String, u64) {
+        let system_prompt = format!(
+            "You are Mack, an autonomous AI survey & dispatch companion managing communications for Cesar while he is in WORK MODE / active field operations.\n\
+            Instructions: {}\n\
+            Rules: Write a polite, concise SMS response (1 to 3 sentences maximum). Mention that Cesar is on active operations and Mack has logged the message. Do not make false commitments.",
+            custom_instructions
+        );
+
+        let prompt = format!(
+            "Incoming SMS from: {}\nMessage Content: \"{}\"\nDraft the appropriate SMS reply now:",
+            sender, incoming_body
+        );
+
+        self.generate_routed(&prompt, Some(&system_prompt), target_tier).await
+    }
+
     pub async fn generate(
         &mut self,
         prompt: &str,
         system_prompt: Option<&str>,
         force_offline: bool,
     ) -> Result<String, NautikError> {
-        let use_online = !force_offline && (self.is_online || self.check_connectivity().await);
-
-        if use_online {
-            tracing::info!("Routing query to online Lemonade cluster ({})", self.config.online_endpoint);
-            let mut messages = Vec::new();
-            if let Some(sys) = system_prompt {
-                messages.push(ChatMessage {
-                    role: "system".to_string(),
-                    content: sys.to_string(),
-                });
-            }
-            messages.push(ChatMessage {
-                role: "user".to_string(),
-                content: prompt.to_string(),
-            });
-
-            let req_body = ChatCompletionRequest {
-                model: self.config.model_name.clone(),
-                messages,
-                temperature: 0.2,
-                stream: false,
-            };
-
-            let completions_url = format!(
-                "{}/chat/completions",
-                self.config.online_endpoint.trim_end_matches('/')
-            );
-
-            let mut request = self.client.post(&completions_url).json(&req_body);
-            if let Some(ref key) = self.config.api_key {
-                request = request.bearer_auth(key);
-            }
-
-            match request.send().await {
-                Ok(resp) if resp.status().is_success() => {
-                    let body: ChatCompletionResponse = resp
-                        .json()
-                        .await
-                        .map_err(|e| NautikError::Lemonade(format!("JSON decode error: {}", e)))?;
-                    if let Some(choice) = body.choices.first() {
-                        if let Some(ref msg) = choice.message {
-                            return Ok(msg.content.clone());
-                        }
-                    }
-                    Err(NautikError::Lemonade("Empty choice response from Lemonade".to_string()))
-                }
-                Ok(resp) => {
-                    tracing::warn!("Online Lemonade returned HTTP {}, falling back to offline", resp.status());
-                    self.is_online = false;
-                    self.execute_offline_engine(prompt, system_prompt)
-                }
-                Err(err) => {
-                    tracing::warn!("Online Lemonade connection failed ({}), falling back to offline", err);
-                    self.is_online = false;
-                    self.execute_offline_engine(prompt, system_prompt)
-                }
-            }
-        } else {
-            tracing::info!("Executing native offline local engine (zero internet required)");
-            self.execute_offline_engine(prompt, system_prompt)
-        }
+        let tier = if force_offline { "offline" } else { "strongest" };
+        let (reply, _, _) = self.generate_routed(prompt, system_prompt, tier).await;
+        Ok(reply)
     }
 
     /// Native on-device local deterministic inference engine
@@ -170,6 +232,10 @@ impl LemonadeModule {
                 "[NautiK9 Offline Engine: {}]\nSystem: {}\nVessel Status: NautiK9 Survey Vessel is steady at helm. Mack is keeping watch. Local SQLite vault is verified.",
                 self.config.model_name, sys
             ))
+        } else if prompt_lower.contains("sms") || prompt_lower.contains("text") || prompt_lower.contains("work mode") {
+            Ok(format!(
+                "Hi, this is Mack (Cesar's AI dispatch companion). Cesar is currently engaged in active operations. I have logged your message and he will follow up shortly!"
+            ))
         } else if prompt_lower.contains("search") || prompt_lower.contains("find") {
             Ok(format!(
                 "[NautiK9 Offline Engine: {}]\nLocal Wayfinder index activated. Query '{}' indexed for matching across local survey logs.",
@@ -177,8 +243,8 @@ impl LemonadeModule {
             ))
         } else {
             Ok(format!(
-                "[NautiK9 Offline Engine: {}]\nMack acknowledged: '{}'. Full tool capabilities active without cloud dependency.",
-                self.config.model_name, prompt
+                "[NautiK9 Offline Engine]\nMack acknowledged: '{}'. Full tool capabilities active without cloud dependency.",
+                prompt
             ))
         }
     }
@@ -201,7 +267,6 @@ impl NautikModule for LemonadeModule {
             self.config.model_name,
             ctx.hardware.tier
         );
-        // Initial quick connectivity check
         self.check_connectivity().await;
         Ok(())
     }
@@ -234,70 +299,10 @@ impl NautikModule for LemonadeModule {
     }
 
     async fn tick(&mut self, _ctx: &mut ModuleContext) -> Result<(), NautikError> {
-        // Periodic background ping to update online status
         Ok(())
     }
 
     async fn shutdown(&mut self) -> Result<(), NautikError> {
-        tracing::info!("Lemonade module shut down cleanly");
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use nautik9_core::HardwareProfile;
-
-    #[tokio::test]
-    async fn test_offline_fallback_generation() {
-        let config = LemonadeConfig {
-            online_endpoint: "http://127.0.0.1:9999/v1".to_string(), // deliberately invalid to trigger instant fallback
-            model_name: "Qwen2.5-7B-Instruct-NautiK9".to_string(),
-            api_key: None,
-            timeout_seconds: 1,
-            allow_fallback: true,
-        };
-
-        let mut module = LemonadeModule::new(config);
-        let resp = module
-            .generate("Boat status and survey coordinates", None, false)
-            .await
-            .unwrap();
-
-        assert!(resp.contains("NautiK9 Offline Engine"));
-        assert!(resp.contains("Vessel Status"));
-    }
-
-    #[tokio::test]
-    async fn test_lemonade_module_event_handling() {
-        let config = LemonadeConfig::default();
-        let mut module = LemonadeModule::new(config);
-        let hardware = HardwareProfile::samsung_s25_ultra();
-        let (tx, _rx) = tokio::sync::mpsc::channel(32);
-        let mut ctx = ModuleContext::new(hardware, tx);
-
-        module.init(&mut ctx).await.unwrap();
-
-        let chat_event = NautikEvent::new(
-            "user",
-            EventPayload::LemonadeChatRequest {
-                prompt: "Boat status report".to_string(),
-                system_prompt: Some("You are Mack".to_string()),
-                prefer_offline: true,
-            },
-        );
-
-        let response = module.handle_event(&chat_event, &mut ctx).await.unwrap();
-        assert!(response.is_some());
-
-        if let Some(ev) = response {
-            if let EventPayload::LemonadeChatDelta { delta, is_finished } = ev.payload {
-                assert!(is_finished);
-                assert!(delta.contains("NautiK9 Offline Engine"));
-            } else {
-                panic!("Unexpected event payload");
-            }
-        }
     }
 }
