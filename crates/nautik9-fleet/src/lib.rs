@@ -73,7 +73,7 @@ impl NautikModule for FleetModule {
     }
 
     fn name(&self) -> &str {
-        "CesarOps Fleet & Telemetry Bridge"
+        "Fleet & Telemetry Bridge"
     }
 
     async fn init(&mut self, ctx: &mut ModuleContext) -> Result<(), NautikError> {

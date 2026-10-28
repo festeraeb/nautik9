@@ -481,12 +481,11 @@ async fn handle_providers(
 }
 
 async fn handle_asset_mack() -> axum::response::Response {
-    use axum::http::{header, StatusCode};
+    use axum::http::header;
     use axum::response::IntoResponse;
-    match tokio::fs::read("assets/mack_avatar.jpg").await {
-        Ok(img) => ([(header::CONTENT_TYPE, "image/jpeg")], img).into_response(),
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
-    }
+    // The avatar is compiled in, so it works from any directory.
+    static AVATAR: &[u8] = include_bytes!("../../../assets/mack_avatar.jpg");
+    ([(header::CONTENT_TYPE, "image/jpeg")], AVATAR).into_response()
 }
 
 async fn handle_status(
@@ -556,7 +555,7 @@ async fn handle_chat(
 
     match state
         .lemonade
-        .chat(prompt, Some("You are Mack, the NautiK9 survey companion."), offline)
+        .chat(prompt, Some("You are Mighty Mack, a NautiDog and helpful companion (sometimes)."), offline)
         .await
     {
         Ok(a) => axum::Json(serde_json::json!({
@@ -1077,7 +1076,7 @@ mod tests {
         // auto_reply is off by default, so no composer was opened
         let (_, inbox) = call(&a, "GET", "/api/sms/inbox", Some(TOKEN), None).await;
         assert_eq!(inbox["work_config"]["auto_reply"], false);
-        assert_eq!(inbox["work_config"]["owner_name"], "Cesar");
+        assert_eq!(inbox["work_config"]["owner_name"], "Thom");
     }
 
     #[tokio::test]

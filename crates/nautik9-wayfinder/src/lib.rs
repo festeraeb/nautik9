@@ -479,7 +479,7 @@ pub fn decompose_task(task_description: &str) -> Vec<String> {
         "5. Execute primary survey or code generation pass".to_string(),
         "6. Validate outputs against strict ground truth (no synthetic fallbacks)".to_string(),
         "7. Update Mack companion avatar status & post mission log to vault".to_string(),
-        "8. Sync telemetry to CesarOps Fleet or trigger offline persistence".to_string(),
+        "8. Sync telemetry to the fleet endpoint, if one is configured".to_string(),
     ]
 }
 

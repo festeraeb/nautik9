@@ -45,7 +45,7 @@ pub struct WorkModeConfig {
 }
 
 fn default_owner_name() -> String {
-    "Cesar".to_string()
+    "Thom".to_string()
 }
 
 fn digits_tail(s: &str) -> String {
@@ -80,7 +80,7 @@ impl Default for WorkModeConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            auto_reply: false, // Default to Safe Review Mode (Lucky's Ask before risky actions)
+            auto_reply: false, // Default to Safe Review Mode (review each draft before it is used)
             preset: "Survey Helm".to_string(),
             custom_instructions: "Be concise, polite and professional, and acknowledge the inquiry.".to_string(),
             model_target: "strongest_fleet".to_string(),
@@ -108,7 +108,7 @@ mod tests {
     fn defaults_are_safe_and_neutral() {
         let c = WorkModeConfig::default();
         assert!(!c.auto_reply);
-        assert_eq!(c.owner_name, "Cesar");
+        assert_eq!(c.owner_name, "Thom");
         let l = format!(" {} ", c.custom_instructions.to_lowercase());
         assert!(!l.contains(" he ") && !l.contains(" his "));
     }

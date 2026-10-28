@@ -1,6 +1,6 @@
 # Porting Jade Vault's intent to NautiK9
 
-NautiK9 follows the design of **Jade Vault** (MIT, v2.16.1). It is a rewrite in Rust for the CESARops setup. No Jade source code is copied; Jade's README, SECURITY.md and docs were read for intent. Thanks to the Jade Vault authors.
+NautiK9 follows the design of **Jade Vault** (MIT, v2.16.1). It is a rewrite in Rust for a home-lab setup. No Jade source code is copied; Jade's README, SECURITY.md and docs were read for intent. Thanks to the Jade Vault authors.
 
 ## Intent principles the port honours
 

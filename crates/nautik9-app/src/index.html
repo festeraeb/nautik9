@@ -320,7 +320,7 @@
             font-family: 'JetBrains Mono', monospace;
         }
 
-        /* Gemstone Tiers Grid (From Lucky's Jade Engine) */
+        /* Tier cards (unused) */
         .gemstone-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -909,7 +909,7 @@
             </div>
             <div class="cockpit-meta">
                 <div class="vessel-title-row">
-                    <div class="vessel-title">Mack • Chief Nauti Dog & Helmsman 🐾⚓</div>
+                    <div class="vessel-title">Mighty Mack • Thom's NautiDog 🐾</div>
                     <span class="vessel-badge">S25 ULTRA</span>
                 </div>
                 <div class="status-pill" id="avatarBadge">
@@ -1655,13 +1655,13 @@
 
         async function setPreset(presetName) {
             playHaptic();
-            let custom_instructions = "You are Mack AI answering texts for Cesar while he is on active field operations. Be concise, polite, professional, and acknowledge the inquiry.";
+            let custom_instructions = "Be concise, polite, professional, and acknowledge the inquiry.";
             if (presetName === 'Deep Focus') {
-                custom_instructions = "Cesar is in deep focus engineering mode. Please state that messages are logged and emergency priority can be escalated via radio.";
+                custom_instructions = "Thom is in deep focus. Please state that messages are logged and emergency priority can be escalated via radio.";
             } else if (presetName === 'Field Ops') {
-                custom_instructions = "Cesar is on open water field survey operations. Inquire whether their issue concerns vessel navigation or buoy telemetry.";
+                custom_instructions = "Thom is out on the water. Inquire whether their issue concerns vessel navigation or buoy telemetry.";
             } else if (presetName === 'Client Dispatch') {
-                custom_instructions = "Polite corporate response confirming Cesar has received their inquiry and will follow up after dock arrival.";
+                custom_instructions = "Polite corporate response confirming Thom has received their inquiry and will follow up after dock arrival.";
             }
 
             try {
