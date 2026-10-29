@@ -811,6 +811,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "nautik9-agent"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "chrono",
+ "futures-util",
+ "nautik9-core",
+ "nautik9-lemonade",
+ "nautik9-wayfinder",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "nautik9-app"
 version = "0.1.0"
 dependencies = [
@@ -819,6 +840,7 @@ dependencies = [
  "chrono",
  "clap",
  "http-body-util",
+ "nautik9-agent",
  "nautik9-core",
  "nautik9-fleet",
  "nautik9-lemonade",

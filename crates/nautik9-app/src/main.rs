@@ -13,6 +13,7 @@ use nautik9_fleet::{FleetConfig, FleetModule};
 use nautik9_lemonade::{LemonadeConfig, LemonadeModule};
 use nautik9_wayfinder::{generate_fast_embedding, WayfinderModule, WayfinderVault};
 
+mod agent_api;
 mod auth;
 mod device_sms;
 
@@ -282,6 +283,8 @@ struct AppState {
     lemonade: std::sync::Arc<LemonadeModule>,
     fleet_url: String,
     sms_bridge: SmsBridge,
+    /// The agent, or why it could not start (reported by every /api/agent call).
+    agent: Result<std::sync::Arc<nautik9_agent::Agent>, String>,
 }
 
 struct ServeOptions {
@@ -317,6 +320,14 @@ fn build_router(state: AppState, token: String) -> axum::Router {
         .route("/api/sms/incoming", post(handle_sms_incoming))
         .route("/api/sms/action", post(handle_sms_action))
         .route("/api/sms/ingest", post(handle_sms_ingest))
+        .route("/api/agent/chat", post(agent_api::chat))
+        .route("/api/agent/sessions", get(agent_api::sessions))
+        .route("/api/agent/sessions/{id}", get(agent_api::session).delete(agent_api::delete_session))
+        .route("/api/agent/sessions/{id}/rate", post(agent_api::rate))
+        .route("/api/agent/sessions/{id}/retry", post(agent_api::retry))
+        .route("/api/agent/export", get(agent_api::export))
+        .route("/api/agent/web_search", post(agent_api::web_search))
+        .route("/api/agent/mcp", post(agent_api::mcp_proxy))
         .layer(axum::middleware::from_fn_with_state(
             std::sync::Arc::new(token),
             auth::require_token,
@@ -439,16 +450,30 @@ async fn serve_mobile_web(
         }
     }
 
+    let agent = match agent_api::load_mcp(&opts.config_dir).await {
+        Ok((tools, local, notes)) => {
+            for n in notes {
+                println!("Agent: {n}");
+            }
+            agent_api::build_agent(&opts.config_dir, &vault_path, lemonade.clone(), (tools, local)).map(std::sync::Arc::new)
+        }
+        Err(e) => Err(e),
+    };
     let state = AppState {
         registry: std::sync::Arc::new(tokio::sync::Mutex::new(registry)),
         hardware,
         vault_path,
         sms_messages: std::sync::Arc::new(tokio::sync::RwLock::new(initial_sms)),
         work_config: std::sync::Arc::new(tokio::sync::RwLock::new(work_config)),
+        agent,
         lemonade,
         fleet_url: opts.fleet_url.clone(),
         sms_bridge: opts.sms_bridge,
     };
+    match &state.agent {
+        Ok(_) => println!("Agent: ready (sessions in {})", opts.config_dir.join("sessions.db").display()),
+        Err(e) => println!("Agent: NOT available: {e}"),
+    }
 
     let app = build_router(state, token.clone());
 
@@ -1068,6 +1093,7 @@ mod tests {
             lemonade: std::sync::Arc::new(dead_lemonade()),
             fleet_url: "http://127.0.0.1:1".into(),
             sms_bridge,
+            agent: agent_api::build_agent(dir, &dir.join("vault.db"), std::sync::Arc::new(dead_lemonade()), Default::default()).map(std::sync::Arc::new),
         };
         build_router(state, TOKEN.to_string())
     }

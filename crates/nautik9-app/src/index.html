@@ -1206,14 +1206,15 @@
     <section id="pane-lemonade" class="section-pane">
         <div class="card">
             <div class="card-header">
-                <span class="card-title">💬 Chat with your model endpoints</span>
+                <span class="card-title">💬 Chat with Mack (agent: notes, memory, web, fleet tools)</span>
+                <button class="btn-primary" style="padding:4px 10px;font-size:0.75rem" onclick="newChat()">New chat</button>
                 <label style="font-size:0.78rem;color:var(--text-sub);display:flex;align-items:center;gap:6px;">
                     <input type="checkbox" id="offlineToggle"> Offline endpoints only
                 </label>
             </div>
             <div class="chat-stream" id="chatStream">
                 <div class="msg-bubble msg-mack">
-                    🐾 Mack is on the bridge. Ask a question; the answer shows which model and endpoint produced it. If no endpoint answers you will see an error here.
+                    🐾 Mack is on the bridge. He can search and edit your notes, remember things, search and read the web, and use the fleet tools. Each answer lists the tools he used and the model that answered. Tick "Offline endpoints only" for a plain answer from an offline model (no tools).
                 </div>
             </div>
             <div class="input-group">
@@ -1882,7 +1883,14 @@
             } catch (e) {}
         }
 
-        // Chat with the model endpoints
+        // Chat with the agent (sessions, tools). Offline toggle = plain answer from an offline endpoint.
+        let chatSession = (function () { try { return localStorage.getItem('nautik9_chat_session') || null; } catch (e) { return null; } })();
+        function setChatSession(id) { chatSession = id; try { id ? localStorage.setItem('nautik9_chat_session', id) : localStorage.removeItem('nautik9_chat_session'); } catch (e) {} }
+        function newChat() {
+            setChatSession(null);
+            const stream = document.getElementById('chatStream');
+            stream.innerHTML = '<div class="msg-bubble msg-mack">🐾 New chat.</div>';
+        }
         async function doChat() {
             const input = document.getElementById('chatInput');
             const p = input.value.trim();
@@ -1898,24 +1906,34 @@
 
             const mackMsg = document.createElement('div');
             mackMsg.className = 'msg-bubble msg-mack';
-            mackMsg.innerText = "Mack is thinking...";
+            mackMsg.innerText = "Mack is working...";
             stream.appendChild(mackMsg);
             stream.scrollTop = stream.scrollHeight;
 
             const offline = document.getElementById('offlineToggle').checked;
             try {
-                const res = await fetch('/api/chat', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ prompt: p, offline: offline })
-                });
-                const data = await res.json();
-                if (!res.ok || data.ok === false) {
-                    mackMsg.innerText = 'No model answered (' + res.status + '): ' + (data.error || res.statusText) +
-                        (data.attempts && data.attempts.length ? '\n' + data.attempts.join('\n') : '');
-                    mackMsg.style.borderColor = 'var(--rose)';
+                if (offline) {
+                    const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: p, offline: true }) });
+                    const data = await res.json();
+                    if (!res.ok || data.ok === false) {
+                        mackMsg.innerText = 'No offline model answered (' + res.status + '): ' + (data.error || res.statusText) + (data.attempts && data.attempts.length ? '\n' + data.attempts.join('\n') : '');
+                        mackMsg.style.borderColor = 'var(--rose)';
+                    } else {
+                        mackMsg.innerText = data.response + `\n\n[${data.model_used} • ${data.duration_ms}ms]`;
+                    }
                 } else {
-                    mackMsg.innerText = data.response + `\n\n[${data.model_used} • ${data.duration_ms}ms]`;
+                    const res = await fetch('/api/agent/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: p, session_id: chatSession }) });
+                    const data = await res.json();
+                    if (!res.ok || data.ok === false) {
+                        mackMsg.innerText = 'No model answered (' + res.status + '): ' + (data.error || res.statusText) + (data.attempts && data.attempts.length ? '\n' + data.attempts.join('\n') : '');
+                        mackMsg.style.borderColor = 'var(--rose)';
+                    } else {
+                        const r = data.result;
+                        setChatSession(r.session_id);
+                        const tools = (r.tool_calls || []).map(t => `${t.ok ? '✓' : '✗'} ${t.name}`).join('  ');
+                        mackMsg.innerText = (r.reply || ('⚠ ' + r.stopped)) +
+                            (tools ? `\n\n🔧 ${tools}` : '') + `\n[${r.model} via ${r.provider} • ${r.steps} step(s)]`;
+                    }
                 }
             } catch (e) {
                 mackMsg.innerText = 'Request failed: ' + e;

@@ -11,6 +11,7 @@ nautik9-core = { path = "../nautik9-core" }
 nautik9-wayfinder = { path = "../nautik9-wayfinder" }
 nautik9-lemonade = { path = "../nautik9-lemonade" }
 nautik9-fleet = { path = "../nautik9-fleet" }
+nautik9-agent = { path = "../nautik9-agent" }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

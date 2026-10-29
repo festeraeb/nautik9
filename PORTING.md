@@ -1,6 +1,6 @@
 # Porting Jade Vault's intent to NautiK9
 
-NautiK9 follows the design of **Jade Vault** (MIT, v2.16.1). It is a rewrite in Rust for a home-lab setup. No Jade source code is copied; Jade's README, SECURITY.md and docs were read for intent. Thanks to the Jade Vault authors.
+NautiK9 follows the design of **Jade Vault** (MIT, lucky-edgelord/jade-vault; v2.16.1, agent work checked against v2.20.0). It is a rewrite in Rust for a home-lab setup. No Jade source code is copied; Jade's README, SECURITY.md and docs were read for intent. Thanks to the Jade Vault authors.
 
 ## Intent principles the port honours
 
@@ -28,21 +28,21 @@ NautiK9 follows the design of **Jade Vault** (MIT, v2.16.1). It is a rewrite in 
 | Provider fallback chain | done | ordered; first that answers wins |
 | Honest model errors (502) | done | `/api/chat` 502 with attempts; SMS status `NoModel` |
 | Provider/model label on answers | done | model field returned plus endpoint |
-| Context guard (compaction, learned limits) | not planned | prompts are single-turn |
-| Chat sessions, history, Copy/Retry/thumbs | planned | chat is one question, one answer today |
+| Context guard (trims old turns, cuts long tool results, learns the limit) | done | `nautik9-agent` `fit_context`; summarising compaction not yet |
+| Chat sessions, history, Retry, 👍/👎 | done (API) | `/api/agent/sessions*`; the web UI keeps one session and shows tools used; Retry/thumbs buttons not in the UI yet |
 | Owner versus other callers | partial | SMS: other people get no notes in the prompt; owner numbers configurable. No tool use exists to restrict yet |
 | Secretary inbox (messages for the owner) | partial | Work SMS list with drafts you approve; not a general inbox |
 | Messenger bridges (Vector, Discord) | not planned | the phone SMS bridge over adb is the equivalent here |
-| Agent tools (shell, node, Python, web, MCP) | not planned | |
-| Memory, journal, SOUL/AGENTS/SYSTEM steering | planned | |
+| Agent tools | partial | notes search/read/list/write/edit, memory, web_search (SearXNG, a home server, DuckDuckGo), web_fetch (HTML to Markdown), http_request, chat_history, skill, delegate, and every tool of configured MCP servers (the CESARops fleet MCP; a phone reaches it through its home server). No local shell/node/Python sandbox |
+| Memory, SOUL/AGENTS/SYSTEM steering, skills | done | `Jade/Memory.md` bullets (keyword-ranked when long), `Jade/SOUL.md`, `AGENTS.md` + `Jade/AGENTS.md`, `Jade/SYSTEM.md`, `Jade/skills/<name>/SKILL.md`. Journal and embedding-ranked memory not yet |
 | Schedules, crontab, heartbeat | not planned | |
 | Flows (n8n-style automations) | not planned | |
 | Scripting (`jade.*`), note scripts, templates | not planned | |
-| Trajectory log / fine-tuning export | not planned | |
+| Trajectory log / fine-tuning export | done | every model call in `trajectories.jsonl`; `/api/agent/export?format=openai\|sharegpt&rated=up` |
 | Webxdc mini apps | not planned | |
 | Live2D avatar, TTS | not planned | NautiK9 has the Mack picture and mood text only |
 | Android wrapper app | done (CPU) | `android/`: WebView over the server running in the app, on-device llama-server for offline answers, inbox read by the app, no adb needed |
-| Secrets as `{{NAME}}` for http_request | not planned | keys live in `providers.json` (keep it private) |
+| Secrets as `{{NAME}}` for http_request | done | `secrets.json` in the config dir; values are masked in every tool result |
 | Tree-of-thought reasoner (not in Jade) | planned | `/api/tot` answers 501; the old output was a fixed template |
 
 ## Known gaps and honest caveats

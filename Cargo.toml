@@ -4,6 +4,7 @@ members = [
     "crates/nautik9-wayfinder",
     "crates/nautik9-lemonade",
     "crates/nautik9-fleet",
+    "crates/nautik9-agent",
     "crates/nautik9-app",
 ]
 resolver = "2"
