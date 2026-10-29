@@ -133,12 +133,28 @@ final class Bridge {
                 sendLocation(error("location is switched off on the phone"));
                 return;
             }
-            String provider = lm.isProviderEnabled(LocationManager.GPS_PROVIDER) ? LocationManager.GPS_PROVIDER : LocationManager.NETWORK_PROVIDER;
+            // 1. A fix from the last two minutes, from any provider, answers at once.
+            Location best = null;
+            for (String p : lm.getProviders(true)) {
+                Location l = lm.getLastKnownLocation(p);
+                if (l != null && (best == null || l.getTime() > best.getTime())) best = l;
+            }
+            final Location last = best;
+            if (last != null && System.currentTimeMillis() - last.getTime() < 120_000) {
+                sendLocation(describe(last, last.getProvider()));
+                return;
+            }
+            // 2. A live fix: fused (Android 12+), else network, else GPS (GPS alone rarely fixes indoors).
+            String provider = Build.VERSION.SDK_INT >= 31 && lm.isProviderEnabled(LocationManager.FUSED_PROVIDER) ? LocationManager.FUSED_PROVIDER
+                    : lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER) ? LocationManager.NETWORK_PROVIDER : LocationManager.GPS_PROVIDER;
             if (Build.VERSION.SDK_INT >= 30) {
-                lm.getCurrentLocation(provider, null, ctx.getMainExecutor(), loc -> sendLocation(describe(loc, provider)));
+                lm.getCurrentLocation(provider, null, ctx.getMainExecutor(), loc -> {
+                    // 3. No live fix: the last known one, marked with its age by the page.
+                    if (loc == null && last != null) sendLocation(describe(last, last.getProvider()));
+                    else sendLocation(loc == null ? error("the " + provider + " provider gave no location in time and the phone has no earlier fix") : describe(loc, provider));
+                });
             } else {
-                Location last = lm.getLastKnownLocation(provider);
-                sendLocation(last == null ? error("no fix yet (Android 10 path uses the last known location)") : describe(last, provider));
+                sendLocation(last == null ? error("the phone has no fix yet (Android 10 uses the last known location only)") : describe(last, last.getProvider()));
             }
         } catch (SecurityException e) {
             sendLocation(error("location permission was refused"));
@@ -148,7 +164,6 @@ final class Bridge {
     }
 
     private static String describe(Location loc, String provider) {
-        if (loc == null) return error("no fix: the " + provider + " provider gave no location in time");
         try {
             return new JSONObject().put("lat", loc.getLatitude()).put("lon", loc.getLongitude())
                     .put("accuracy_m", loc.hasAccuracy() ? loc.getAccuracy() : JSONObject.NULL)

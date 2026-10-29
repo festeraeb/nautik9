@@ -10,7 +10,8 @@
 //! Context guard: the prompt is kept under `context_chars` (about 4 characters per token) by
 //! dropping the oldest whole turns (a turn starts at a user message, so tool results are never
 //! orphaned) and by cutting tool results longer than `max_tool_chars`. If the endpoint still
-//! answers "context" too long, the budget is halved and the call retried once, and the learned
+//! answers "context" too long, the budget (and the per-tool-result cap, a quarter of it) is halved
+//! and the call retried, up to twice, and the learned
 //! budget is kept for the rest of the process.
 //!
 //! Loop: up to `max_steps` model calls; each tool call is run (tools marked `parallel` run at
@@ -225,14 +226,17 @@ impl Agent {
     /// One model call with the context guard and the learned budget.
     async fn call_model(&self, system: &Value, history: &[Value], tools: &Value) -> Result<(nautik9_lemonade::RawAnswer, usize), ChatFailure> {
         let mut budget = self.learned_budget.load(Ordering::Relaxed);
-        for attempt in 0..2 {
-            let (msgs, trimmed) = fit_context(system, history, budget, self.cfg.max_tool_chars);
+        for attempt in 0..3 {
+            // Tool results shrink with the budget too: the newest turn is always kept, so on a
+            // small-context model (4k on a phone) its page text is what has to give.
+            let tool_cap = self.cfg.max_tool_chars.min(budget / 4).max(800);
+            let (msgs, trimmed) = fit_context(system, history, budget, tool_cap);
             match self.llm.chat_messages(&msgs, Some(tools), Some(self.cfg.max_tokens), false).await {
                 Ok(a) => {
                     self.ctx.store.log_trajectory(&json!({"ts": chrono::Local::now().to_rfc3339(), "model": a.model, "provider": a.provider, "messages": msgs, "tools": tools, "response": a.message, "finish_reason": a.finish_reason}));
                     return Ok((a, trimmed));
                 }
-                Err(f) if attempt == 0 && f.attempts.iter().any(|x| x.to_lowercase().contains("context")) => {
+                Err(f) if attempt < 2 && f.attempts.iter().any(|x| x.to_lowercase().contains("context")) => {
                     budget /= 2;
                     self.learned_budget.store(budget, Ordering::Relaxed);
                 }

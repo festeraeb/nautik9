@@ -1646,9 +1646,10 @@
             readout.innerText = `Lat: ${f.lat.toFixed(6)}° | Lon: ${f.lon.toFixed(6)}°`;
             const acc = f.accuracy_m == null ? 'accuracy unknown' : `Accuracy: ±${Number(f.accuracy_m).toFixed(1)} m`;
             const alt = f.altitude_m == null ? '' : ` | Alt: ${Number(f.altitude_m).toFixed(0)} m`;
+            const age = f.time_ms ? Math.max(0, Math.round((Date.now() - f.time_ms) / 1000)) : null;
             const when = f.time_ms ? ` | ${new Date(f.time_ms).toLocaleTimeString()}` : '';
-            detail.innerText = `${acc}${alt} | ${f.provider}${when}`;
-            badge.innerText = 'Live fix';
+            detail.innerText = `${acc}${alt} | ${f.provider}${when}` + (age != null && age > 120 ? ` | last known fix, ${Math.round(age / 60)} min old` : '');
+            badge.innerText = age != null && age > 120 ? 'Old fix' : 'Live fix';
             badge.style.color = 'var(--emerald)';
         }
         window.n9OnLocation = showFix;

@@ -101,7 +101,7 @@ impl Caller<'_> {
 
 const PROPOSE: &str = "ROLE: PROPOSE. You are the thought generator of a tree-of-thought reasoner. Given a problem and the reasoning so far, propose distinct, concrete next steps (each one or two sentences, a different approach from the others). Reply with ONLY a JSON array of strings.";
 const SCORE: &str = "ROLE: SCORE. You are the evaluator of a tree-of-thought reasoner. Rate how likely the latest step is to lead to a correct, complete solution of the problem, from 0 (wrong or useless) to 10 (certainly right and on track). Be critical. Reply with ONLY JSON: {\"score\": <0-10>, \"reason\": \"<one sentence>\"}.";
-const ANSWER: &str = "ROLE: ANSWER. Using the reasoning path given, write the final answer to the problem. Be direct, and say plainly if the path leaves something unresolved.";
+const ANSWER: &str = "ROLE: ANSWER. Solve the problem for the user. The reasoning path is your outline: follow its steps in order and turn each into concrete, specific content (numbers, settings, times, choices) so the result can be acted on. Do not review or grade the path, and do not say it is incomplete; fill the gaps yourself. Only if a fact is truly unknowable without more information, state the assumption you made in one short line.";
 
 /// The JSON array of thoughts in a model reply (or a bullet/numbered list as a fallback).
 pub fn parse_thoughts(text: &str) -> Vec<String> {

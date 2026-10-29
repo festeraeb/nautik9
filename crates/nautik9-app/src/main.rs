@@ -1086,13 +1086,13 @@ async fn handle_avatar_action(
 
     match action {
         "bark" | "alert" => {
-            avatar.transition_to(nautik9_core::avatar::MackState::TargetLocked, "Mack barked! Target locked on survey sonar.".to_string());
+            avatar.transition_to(nautik9_core::avatar::MackState::TargetLocked, "Mack barked!".to_string());
         }
         "sleep" | "rest" => {
             avatar.transition_to(nautik9_core::avatar::MackState::Idle, "Mack is resting on the foredeck.".to_string());
         }
         "navigate" => {
-            avatar.transition_to(nautik9_core::avatar::MackState::SurveyNavigating, "NautiK9 underway: heading 042° True.".to_string());
+            avatar.transition_to(nautik9_core::avatar::MackState::SurveyNavigating, "Mack is ready to plot a course (no route or heading is set).".to_string());
         }
         _ => {
             avatar.transition_to(nautik9_core::avatar::MackState::Attentive, "Mack is watching the helm.".to_string());

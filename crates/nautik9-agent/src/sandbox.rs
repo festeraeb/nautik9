@@ -210,6 +210,11 @@ async fn run_in(cfg: &SandboxConfig, lang: Lang, code: &str, timeout_secs: Optio
         cmd.env_clear().env("HOME", dir).env("PATH", path_env).env("LANG", "C.UTF-8").env("TMPDIR", dir);
     }
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    // glibc names the resource type; Android's bionic and musl take a plain int.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    type RlimitResource = libc::__rlimit_resource_t;
+    #[cfg(all(unix, not(all(target_os = "linux", target_env = "gnu"))))]
+    type RlimitResource = libc::c_int;
     #[cfg(unix)]
     {
         let (mem, cpu, fsize, node) = (cfg.memory_mb * 1024 * 1024, cfg.cpu_secs, (cfg.max_output_bytes as u64).max(1 << 20) * 64, lang == Lang::Node);
@@ -217,7 +222,7 @@ async fn run_in(cfg: &SandboxConfig, lang: Lang, code: &str, timeout_secs: Optio
         unsafe {
             cmd.pre_exec(move || {
                 libc::setsid();
-                let set = |res: libc::__rlimit_resource_t, v: u64| {
+                let set = |res: RlimitResource, v: u64| {
                     let l = libc::rlimit { rlim_cur: v as libc::rlim_t, rlim_max: v as libc::rlim_t };
                     libc::setrlimit(res, &l);
                 };

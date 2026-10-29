@@ -135,3 +135,41 @@ async fn no_endpoint_is_an_error_not_an_answer() {
     let e = a.turn(None, "hello", true).await.unwrap_err();
     assert_eq!(e.error, "no model endpoint answered");
 }
+
+/// A 4k-context model (as on the phone): any request whose messages are over `limit` characters
+/// gets llama-server's 400. A turn whose own tool result is huge must still be answered.
+#[tokio::test]
+async fn a_small_context_model_still_answers_after_a_huge_tool_result() {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    let limit = 9_000usize;
+    let seen = Arc::new(Mutex::new(Vec::<usize>::new()));
+    let s2 = seen.clone();
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(move |Json(req): Json<Value>| {
+            let seen = s2.clone();
+            async move {
+                let size = req["messages"].to_string().len();
+                seen.lock().unwrap().push(size);
+                if size > limit {
+                    return (StatusCode::BAD_REQUEST, Json(json!({"error":{"code":400,"message":format!("request ({} tokens) exceeds the available context size (4096 tokens), try increasing it", size / 4),"type":"exceed_context_size_error"}}))).into_response();
+                }
+                let msg = if tool_msgs(&req).is_empty() {
+                    json!({"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"read","arguments":"{\"path\":\"Big.md\"}"}}]})
+                } else {
+                    json!({"role":"assistant","content":"Read it."})
+                };
+                Json(json!({"model": "mock-1", "choices": [{"message": msg, "finish_reason": "stop"}]})).into_response()
+            }
+        }),
+    );
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1", l.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+    let vault = Arc::new(WayfinderVault::in_memory().unwrap());
+    nautik9_agent::tools::write_note(&vault, "Big.md", &"page text ".repeat(3000)).await.unwrap();
+    let a = agent(&base, vault, Store::in_memory().unwrap(), AgentConfig { context_chars: 48_000, ..AgentConfig::default() });
+    let r = a.turn(None, "Read Big.md", true).await.unwrap();
+    assert_eq!(r.reply.as_deref(), Some("Read it."), "sizes sent: {:?}", seen.lock().unwrap());
+}

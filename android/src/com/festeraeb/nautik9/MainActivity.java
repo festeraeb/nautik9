@@ -49,9 +49,14 @@ public class MainActivity extends Activity {
                 + "Mack is waking up...</body>", "text/html", "utf-8");
         setContentView(web);
 
-        if (checkSelfPermission(android.Manifest.permission.READ_SMS) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[] {android.Manifest.permission.READ_SMS}, 1);
+        java.util.List<String> ask = new java.util.ArrayList<>();
+        if (checkSelfPermission(android.Manifest.permission.READ_SMS) != PackageManager.PERMISSION_GRANTED) ask.add(android.Manifest.permission.READ_SMS);
+        // Android 13+: the "NautiK9 is running" notification needs this; the service runs either way.
+        if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            ask.add(android.Manifest.permission.POST_NOTIFICATIONS);
         }
+        if (!ask.isEmpty()) requestPermissions(ask.toArray(new String[0]), 1);
+        startForegroundService(new Intent(this, EngineService.class));
         start();
     }
 
