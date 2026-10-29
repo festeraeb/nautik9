@@ -335,6 +335,11 @@ fn build_router(state: AppState, token: String) -> axum::Router {
         .route("/api/agent/journal", post(agent_api::journal))
         .route("/api/agent/web_search", post(agent_api::web_search))
         .route("/api/agent/mcp", post(agent_api::mcp_proxy))
+        .route("/api/agent/playbooks", get(agent_api::playbooks))
+        .route("/api/agent/playbooks/{name}", get(agent_api::playbook_show))
+        .route("/api/agent/playbooks/{name}/check", post(agent_api::playbook_check))
+        .route("/api/agent/playbooks/{name}/run", post(agent_api::playbook_run))
+        .route("/api/agent/playbooks/{name}/approve", post(agent_api::playbook_approve))
         .layer(axum::middleware::from_fn_with_state(
             std::sync::Arc::new(token),
             auth::require_token,
@@ -462,7 +467,7 @@ async fn serve_mobile_web(
             for n in notes {
                 println!("Agent: {n}");
             }
-            agent_api::build_agent(&opts.config_dir, &vault_path, lemonade.clone(), (tools, local)).map(std::sync::Arc::new)
+            agent_api::build_agent(&opts.config_dir, &vault_path, lemonade.clone(), (tools, local))
         }
         Err(e) => Err(e),
     };
@@ -1114,7 +1119,7 @@ mod tests {
             lemonade: std::sync::Arc::new(dead_lemonade()),
             fleet_url: "http://127.0.0.1:1".into(),
             sms_bridge,
-            agent: agent_api::build_agent(dir, &dir.join("vault.db"), std::sync::Arc::new(dead_lemonade()), Default::default()).map(std::sync::Arc::new),
+            agent: agent_api::build_agent(dir, &dir.join("vault.db"), std::sync::Arc::new(dead_lemonade()), Default::default()),
             scheduler: None,
         };
         let state = AppState { scheduler: state.agent.as_ref().ok().map(|a| nautik9_agent::schedule::Runner::new(a.clone(), 0)), ..state };
@@ -1162,12 +1167,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn playbook_api_check_run_approve() {
+        let d = tempfile::tempdir().unwrap();
+        {
+            let v = nautik9_wayfinder::WayfinderVault::new(&d.path().join("vault.db")).unwrap();
+            let doc = serde_json::json!({"name":"hello","vars":{"who":"world"},"tasks":[
+                {"do":"write","args":{"path":"Out/{{ who }}.md","content":"hi {{ who }}"},"register":"w"},
+                {"do":"read","args":{"path":"Out/world.md"},"register":"r"},
+                {"do":"assert","args":{"that":["w.ok","r.result == 'hi world'"]}}]});
+            nautik9_agent::tools::write_note(&v, "Jade/Playbooks/hello.json", &doc.to_string()).await.unwrap();
+        }
+        let a = app(d.path());
+        let u = "/api/agent/playbooks";
+        let (s, l) = call(&a, "GET", u, Some(TOKEN), None).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(l[0]["name"], "hello");
+        assert_eq!(l[0]["approved"], false);
+        let (s, c) = call(&a, "POST", &format!("{u}/hello/check"), Some(TOKEN), None).await;
+        assert!(s == StatusCode::OK && c["ok"] == true && c["plan"].as_array().unwrap().len() == 3, "{c}");
+        let (s, _) = call(&a, "GET", &format!("{u}/nope"), Some(TOKEN), None).await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+        let (s, _) = call(&a, "POST", &format!("{u}/hello/run"), Some(TOKEN), Some(serde_json::json!({"trigger":"schedule"}))).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "not approved yet");
+        let (s, r) = call(&a, "POST", &format!("{u}/hello/run"), Some(TOKEN), Some(serde_json::json!({}))).await;
+        assert!(s == StatusCode::OK && r["ok"] == true && r["trigger"] == "manual", "{r}");
+        let (s, ap) = call(&a, "POST", &format!("{u}/hello/approve"), Some(TOKEN), None).await;
+        assert!(s == StatusCode::OK && ap["sha256"].as_str().unwrap().len() == 64);
+        let (s, r) = call(&a, "POST", &format!("{u}/hello/run"), Some(TOKEN), Some(serde_json::json!({"trigger":"schedule","vars":{"who":"world"}}))).await;
+        assert!(s == StatusCode::OK && r["ok"] == true && r["trigger"] == "schedule", "{r}");
+        let (s, r) = call(&a, "POST", &format!("{u}/hello/run"), Some(TOKEN), Some(serde_json::json!({"vars":{"bogus":1}}))).await;
+        assert!(s == StatusCode::OK && r["ok"] == false, "a failed run is reported as failed: {r}");
+        let (s, sh) = call(&a, "GET", &format!("{u}/hello"), Some(TOKEN), None).await;
+        assert!(s == StatusCode::OK && sh["approved"] == true);
+    }
+
+    #[tokio::test]
     async fn api_requires_token_except_health() {
         let d = tempfile::tempdir().unwrap();
         let a = app(d.path());
         let (s, _) = call(&a, "GET", "/api/health", None, None).await;
         assert_eq!(s, StatusCode::OK);
-        for uri in ["/api/sms/inbox", "/api/notes", "/api/status", "/api/fleet/status", "/api/tags", "/api/providers", "/assets/mack.jpg"] {
+        for uri in ["/api/sms/inbox", "/api/notes", "/api/status", "/api/fleet/status", "/api/tags", "/api/providers", "/assets/mack.jpg", "/api/agent/playbooks"] {
             let (s, _) = call(&a, "GET", uri, None, None).await;
             assert_eq!(s, StatusCode::UNAUTHORIZED, "{uri} must need a token");
         }

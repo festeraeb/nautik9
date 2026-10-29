@@ -16,6 +16,13 @@
 //!                                           -> {result}: the `embeddings` tool's actions (hybrid search)
 //!   POST   /api/agent/journal               {date?: YYYY-MM-DD} -> the journal for that day (default
 //!                                           yesterday); 502 and nothing written when no model answers
+//!   GET    /api/agent/playbooks             -> [{name, description, tasks, valid, approved, sha256, last_run}]
+//!   GET    /api/agent/playbooks/{name}      -> {name, sha256, approved, json}
+//!   POST   /api/agent/playbooks/{name}/check    -> {ok, problems, plan}  (validates, runs nothing)
+//!   POST   /api/agent/playbooks/{name}/run      {vars?, skip_tags?, trigger?: "manual" | "schedule"} -> RunReport
+//!                                           (200 even when a task failed: read `ok`; 403 when a
+//!                                           schedule run is not approved; 422 when invalid)
+//!   POST   /api/agent/playbooks/{name}/approve  -> {ok, sha256}
 //!
 //!   POST   /api/agent/web_search            {query, k?} -> {result}: this server's web search, for
 //!                                           phones that search through the home server
@@ -47,6 +54,7 @@ use axum::Json;
 use nautik9_agent::memory::{EmbedConfig, MemoryIndex};
 use nautik9_agent::store::Store;
 use nautik9_agent::tools::{search_once, McpServer, Registry, SearchBackend, Tool, ToolCtx};
+use nautik9_agent::playbook::{self, Asker, PbError, PlaybookTool, Trigger};
 use nautik9_agent::{Agent, AgentConfig};
 use nautik9_lemonade::LemonadeModule;
 use nautik9_wayfinder::WayfinderVault;
@@ -105,7 +113,7 @@ pub fn build_agent(
     vault_path: &std::path::Path,
     llm: Arc<LemonadeModule>,
     mcp: (Vec<Arc<dyn Tool>>, HashMap<String, McpServer>),
-) -> Result<Agent, String> {
+) -> Result<Arc<Agent>, String> {
     let vault = WayfinderVault::new(vault_path).map_err(|e| format!("vault {}: {e}", vault_path.display()))?;
     let store = Store::open(&config_dir.join("sessions.db"), Some(config_dir.join("trajectories.jsonl")))?;
     let secrets: HashMap<String, String> = match std::fs::read_to_string(config_dir.join("secrets.json")) {
@@ -144,11 +152,16 @@ pub fn build_agent(
         mcp_local: Arc::new(mcp.1),
         memory: Arc::new(memory),
     };
-    let (registry, skipped) = Registry::with_extra(mcp.0);
-    if !skipped.is_empty() {
-        println!("Agent: MCP tools skipped (name taken by a built-in tool): {}", skipped.join(", "));
-    }
-    Ok(Agent::with_tools(llm, ctx, cfg, registry))
+    // The playbook tool needs the agent's registry and its `ask` turn, so it holds the agent weakly.
+    Ok(Arc::new_cyclic(|me| {
+        let mut extra = mcp.0;
+        extra.push(Arc::new(PlaybookTool { agent: me.clone() }));
+        let (registry, skipped) = Registry::with_extra(extra);
+        if !skipped.is_empty() {
+            println!("Agent: tools skipped (name taken by a built-in tool): {}", skipped.join(", "));
+        }
+        Agent::with_tools(llm, ctx, cfg, registry)
+    }))
 }
 
 /// The web_search backend list from agent.json (see the module doc).
@@ -472,5 +485,82 @@ pub async fn run_schedule(State(st): State<AppState>, Path(id): Path<String>) ->
         Err(e) if e.starts_with("busy") => bad(StatusCode::CONFLICT, e),
         Err(e) if e.starts_with("no schedule") => bad(StatusCode::NOT_FOUND, e),
         Err(e) => bad(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+// ── playbooks ───────────────────────────────────────────────────────────────
+
+fn pb_error(e: PbError) -> Response {
+    match e {
+        PbError::NotFound(m) => bad(StatusCode::NOT_FOUND, m),
+        PbError::Invalid(p) => (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"ok": false, "error": "playbook is not valid", "problems": p}))).into_response(),
+        PbError::NotApproved(m) => bad(StatusCode::FORBIDDEN, m),
+        PbError::Other(m) => bad(StatusCode::INTERNAL_SERVER_ERROR, m),
+    }
+}
+
+pub async fn playbooks(State(st): State<AppState>) -> Response {
+    let a = match agent_of(&st) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    match playbook::list(&a.ctx, &a.tools).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => bad(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+pub async fn playbook_show(State(st): State<AppState>, Path(name): Path<String>) -> Response {
+    let a = match agent_of(&st) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    match playbook::load(&a.ctx, &name).await {
+        Ok((_, raw, sha)) => {
+            let approved = playbook::is_approved(&a.ctx, &name, &sha).await.unwrap_or(false);
+            Json(json!({"name": name, "sha256": sha, "approved": approved, "json": raw})).into_response()
+        }
+        Err(e) => pb_error(e),
+    }
+}
+
+pub async fn playbook_check(State(st): State<AppState>, Path(name): Path<String>) -> Response {
+    let a = match agent_of(&st) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    match playbook::check_named(&a.ctx, &a.tools, &name).await {
+        Ok(r) => Json(r).into_response(),
+        Err(e) => pb_error(e),
+    }
+}
+
+pub async fn playbook_run(State(st): State<AppState>, Path(name): Path<String>, body: Option<Json<Value>>) -> Response {
+    let a = match agent_of(&st) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let p = body.map(|b| b.0).unwrap_or(Value::Null);
+    let vars = p["vars"].as_object().cloned().unwrap_or_default();
+    let tags: Vec<String> = p["skip_tags"].as_array().into_iter().flatten().filter_map(|t| t.as_str().map(str::to_string)).collect();
+    let trigger = match p["trigger"].as_str() {
+        None | Some("manual") => Trigger::Manual,
+        Some("schedule") => Trigger::Schedule,
+        Some(o) => return bad(StatusCode::BAD_REQUEST, format!("unknown trigger `{o}` (manual or schedule)")),
+    };
+    match playbook::run_named(&a.ctx, &a.tools, Some(a.as_ref() as &dyn Asker), &name, &vars, &tags, trigger).await {
+        Ok(r) => Json(r).into_response(),
+        Err(e) => pb_error(e),
+    }
+}
+
+pub async fn playbook_approve(State(st): State<AppState>, Path(name): Path<String>) -> Response {
+    let a = match agent_of(&st) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    match playbook::approve(&a.ctx, &a.tools, &name).await {
+        Ok(sha) => Json(json!({"ok": true, "sha256": sha})).into_response(),
+        Err(e) => pb_error(e),
     }
 }

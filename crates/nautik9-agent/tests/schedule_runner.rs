@@ -109,7 +109,12 @@ async fn crontab_runs_and_bad_lines_are_logged_once() {
     let a = agent(&mock(seen.clone()).await);
     let runner = Runner::new(a.clone(), 0);
     write_note(&a.ctx.vault, CRONTAB_PATH, "# jobs\n* * * * * prompt Say hello\nnot a cron line\n").await.unwrap();
-    let t0 = now();
+    // 5 s past a minute, so t0 + 30 s stays inside the same minute (with the wall clock as t0 the
+    // every-minute job could fall due at +30 s and the test failed about one run in thirty).
+    let t0 = {
+        use chrono::Timelike;
+        now().with_second(5).unwrap().with_nanosecond(0).unwrap()
+    };
     assert_eq!(runner.tick(t0).await, 0, "first sight only schedules the next run");
     assert_eq!(runner.tick(t0 + Duration::seconds(30)).await, 0);
     assert_eq!(runner.tick(t0 + Duration::minutes(2)).await, 1);
