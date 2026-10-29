@@ -76,7 +76,7 @@ fn query_token(query: Option<&str>) -> Option<String> {
 
 /// Paths that never need a token: the HTML shell (no data in it) and health.
 fn is_open(path: &str) -> bool {
-    path == "/" || path == "/api/health"
+    path == "/" || path == "/api/health" || path.starts_with("/xdc/") // /xdc/ files carry their own view key
 }
 
 pub async fn require_token(State(token): State<std::sync::Arc<String>>, req: Request, next: Next) -> Response {

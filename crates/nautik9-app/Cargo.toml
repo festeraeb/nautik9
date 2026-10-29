@@ -12,6 +12,8 @@ nautik9-wayfinder = { path = "../nautik9-wayfinder" }
 nautik9-lemonade = { path = "../nautik9-lemonade" }
 nautik9-fleet = { path = "../nautik9-fleet" }
 nautik9-agent = { path = "../nautik9-agent" }
+nautik9-bridges = { path = "../nautik9-bridges" }
+nautik9-webxdc = { path = "../nautik9-webxdc" }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -23,9 +25,12 @@ axum = "0.8.9"
 uuid = { workspace = true }
 reqwest = { workspace = true }
 chrono = { workspace = true }
+sha2 = "0.10"
+rusqlite = { workspace = true }
 
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 tempfile = "3.10"
 http-body-util = "0.1"
+zip = { version = "2", default-features = false, features = ["deflate"] }

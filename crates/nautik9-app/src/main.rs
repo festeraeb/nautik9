@@ -16,6 +16,9 @@ use nautik9_wayfinder::{generate_fast_embedding, WayfinderModule, WayfinderVault
 mod agent_api;
 mod auth;
 mod device_sms;
+mod bridges_glue;
+mod tts;
+mod webxdc_api;
 
 #[derive(Parser, Debug)]
 #[command(name = "nautik9", version = "0.1.0", about = "NautiK9 Pure-Rust Survey & Organization Engine")]
@@ -340,6 +343,9 @@ fn build_router(state: AppState, token: String) -> axum::Router {
         .route("/api/agent/playbooks/{name}/check", post(agent_api::playbook_check))
         .route("/api/agent/playbooks/{name}/run", post(agent_api::playbook_run))
         .route("/api/agent/playbooks/{name}/approve", post(agent_api::playbook_approve))
+        // Webxdc mini apps and text to speech (own modules)
+        .merge(webxdc_api::routes())
+        .merge(tts::routes())
         .layer(axum::middleware::from_fn_with_state(
             std::sync::Arc::new(token),
             auth::require_token,
@@ -501,7 +507,13 @@ async fn serve_mobile_web(
         r.spawn();
         println!("Agent: scheduler running (ticks every 30 s; Jade/crontab, Jade/HEARTBEAT.md, log Jade/Logs/cron.log)");
     }
-    let app = build_router(state, token.clone());
+    for n in match &state.agent {
+        Ok(a) => bridges_glue::spawn(&opts.config_dir, a.clone(), state.lemonade.clone(), state.work_config.clone(), state.sms_messages.clone()),
+        Err(_) => vec![],
+    } {
+        println!("Bridges: {n}");
+    }
+    let app = build_router(state, token.clone()).layer(axum::Extension(webxdc_api::Runtime { config_dir: opts.config_dir.clone(), secret: token.clone() }));
 
     let addr = format!("{}:{}", opts.bind, opts.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;

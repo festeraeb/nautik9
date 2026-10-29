@@ -897,6 +897,21 @@
             color: var(--text-sub);
         }
     </style>
+
+    <!-- Voice, avatar talking state and mini apps (separate block) -->
+    <style>
+        .avatar-bezel.talking { animation: n9-ring 0.9s ease-in-out infinite; }
+        .avatar-bezel.talking .avatar-img { animation: n9-bob 0.45s ease-in-out infinite alternate; }
+        .avatar-bezel.mood-excited { background: var(--emerald, #34d399); }
+        .avatar-bezel.mood-concerned { background: var(--rose, #fb7185); }
+        @keyframes n9-bob { from { transform: translateY(0) scale(1); } to { transform: translateY(-2px) scale(1.04); } }
+        @keyframes n9-ring { 0%, 100% { box-shadow: 0 2px 8px rgba(0,0,0,.4); } 50% { box-shadow: 0 0 14px 3px rgba(56,189,248,.65); } }
+        @media (prefers-reduced-motion: reduce) { .avatar-bezel.talking, .avatar-bezel.talking .avatar-img { animation: none; } }
+        #n9VoiceNote { font-size: 0.72rem; color: var(--text-sub, #94a3b8); margin-top: 2px; min-height: 1em; }
+        .n9-app-row { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid rgba(148,163,184,.2); font-size: 0.85rem; }
+        .n9-app-row span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        #n9AppFrame { width: 100%; height: 360px; border: 1px solid rgba(148,163,184,.3); border-radius: 8px; margin-top: 8px; background: #fff; display: none; }
+    </style>
 </head>
 <body>
 
@@ -1221,6 +1236,16 @@
                 <input type="text" id="chatInput" placeholder="Ask Mack or query survey..." onkeydown="if(event.key==='Enter') doChat()">
                 <button class="btn-primary" onclick="doChat()">Send</button>
             </div>
+        </div>
+        <div class="card" id="n9AppsCard">
+            <div class="card-header">
+                <span class="card-title">🧩 Mini apps (.xdc, offline, sandboxed, no network)</span>
+                <label class="btn-primary" style="padding:4px 10px;font-size:0.75rem;cursor:pointer">Add .xdc
+                    <input type="file" accept=".xdc,application/zip" style="display:none" onchange="n9UploadXdc(this)">
+                </label>
+            </div>
+            <div id="n9AppList" style="font-size:0.85rem;color:var(--text-sub)">Loading...</div>
+            <iframe id="n9AppFrame" sandbox="allow-scripts allow-same-origin" title="Mini app"></iframe>
         </div>
     </section>
 
@@ -1975,6 +2000,122 @@
         loadSmsInbox(!!AppBridge);
         loadFleetTelemetry();
         renderOfflineModel();
+    </script>
+    <script>
+        // ---- Voice (speak a reply), avatar talking state, mini apps ----
+        // Server voice first (POST /api/agent/tts); if none is configured or it fails, the
+        // browser's own speechSynthesis, and the note under the avatar says which one spoke.
+        let n9Audio = null;
+        function n9VoiceNote(t) { const n = document.getElementById('n9VoiceNote'); if (n) n.innerText = t; }
+        function n9Talking(on) {
+            const b = document.getElementById('avatarBezel');
+            if (b) b.classList.toggle('talking', !!on);
+        }
+        function n9MoodOf(text, failed) {
+            if (failed || /\b(sorry|cannot|can't|couldn't|unable|error|failed|no model|not available)\b/i.test(text || '')) return 'concerned';
+            if (/!|\b(found|done|great|success|yes)\b/i.test(text || '')) return 'excited';
+            return 'calm';
+        }
+        function n9SetMood(text, failed) {
+            const b = document.getElementById('avatarBezel');
+            if (!b) return;
+            const m = n9MoodOf(text, failed);
+            b.classList.remove('mood-excited', 'mood-concerned', 'mood-calm');
+            b.classList.add('mood-' + m);
+            if (!document.getElementById('n9VoiceNote')) {
+                const n = document.createElement('div'); n.id = 'n9VoiceNote';
+                const meta = document.querySelector('.cockpit-meta'); if (meta) meta.appendChild(n);
+            }
+            n9VoiceNote('Mack feels ' + m + ' about that reply');
+        }
+        function n9StopSpeaking() {
+            if (n9Audio) { try { n9Audio.pause(); } catch (e) {} n9Audio = null; }
+            try { window.speechSynthesis && window.speechSynthesis.cancel(); } catch (e) {}
+            n9Talking(false);
+        }
+        function n9BrowserSpeak(text, why) {
+            if (!('speechSynthesis' in window)) { n9VoiceNote('No voice available: ' + why + '; this browser has no speechSynthesis'); return; }
+            const u = new SpeechSynthesisUtterance(text);
+            u.onstart = () => n9Talking(true);
+            u.onend = u.onerror = () => n9Talking(false);
+            n9VoiceNote('Browser voice (speechSynthesis), not the server voice: ' + why);
+            window.speechSynthesis.speak(u);
+        }
+        async function n9Speak(text) {
+            n9StopSpeaking();
+            text = (text || '').trim().slice(0, 4000);
+            if (!text) return;
+            let why = '';
+            try {
+                const res = await fetch('/api/agent/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+                if (res.ok) {
+                    const url = URL.createObjectURL(await res.blob());
+                    n9Audio = new Audio(url);
+                    n9Audio.onplay = () => n9Talking(true);
+                    n9Audio.onended = n9Audio.onerror = () => { n9Talking(false); URL.revokeObjectURL(url); };
+                    n9VoiceNote('Server voice');
+                    await n9Audio.play();
+                    return;
+                }
+                let j = {}; try { j = await res.json(); } catch (e) {}
+                why = j.error || ('HTTP ' + res.status);
+            } catch (e) { why = String(e); }
+            n9BrowserSpeak(text, why);
+        }
+        // Add a Speak button and set the mood on every agent reply (Retry re-renders through this too).
+        (function () {
+            const orig = renderAgentReply;
+            renderAgentReply = function (el, r) {
+                orig(el, r);
+                const bar = el.querySelector('.reply-actions');
+                const said = r.reply || '';
+                n9SetMood(said || r.stopped || '', !r.reply);
+                if (bar && said) {
+                    const b = document.createElement('button');
+                    b.className = 'btn-primary'; b.style.cssText = 'padding:2px 8px;font-size:0.75rem'; b.innerText = '🔊 Speak';
+                    b.onclick = () => n9Speak(said);
+                    bar.appendChild(b);
+                }
+            };
+        })();
+
+        async function n9LoadApps() {
+            const box = document.getElementById('n9AppList');
+            try {
+                const res = await fetch('/api/webxdc/apps');
+                const apps = await res.json();
+                if (!res.ok) { box.innerText = 'Mini apps unavailable: ' + (apps.error || res.status); return; }
+                box.innerHTML = apps.length ? '' : 'No mini apps yet. Add an .xdc file.';
+                apps.forEach(a => {
+                    const row = document.createElement('div'); row.className = 'n9-app-row';
+                    row.innerHTML = '<span>' + esc(a.name) + ' <small>(' + esc(a.files) + ' files, ' + esc(Math.round(a.bytes / 1024)) + ' KB)</small></span>';
+                    const open = document.createElement('button'); open.className = 'btn-primary'; open.style.cssText = 'padding:2px 8px;font-size:0.75rem'; open.innerText = 'Open';
+                    open.onclick = () => n9OpenApp(a.id);
+                    const del = document.createElement('button'); del.className = 'btn-primary'; del.style.cssText = 'padding:2px 8px;font-size:0.75rem'; del.innerText = 'Delete';
+                    del.onclick = async () => { if (confirm('Delete ' + a.name + ' and its updates?')) { await fetch('/api/webxdc/apps/' + a.id, { method: 'DELETE' }); document.getElementById('n9AppFrame').style.display = 'none'; n9LoadApps(); } };
+                    row.append(open, del); box.appendChild(row);
+                });
+            } catch (e) { box.innerText = 'Mini apps unavailable: ' + e; }
+        }
+        function n9OpenApp(id) {
+            const f = document.getElementById('n9AppFrame');
+            f.src = '/api/webxdc/apps/' + encodeURIComponent(id) + '/host?token=' + encodeURIComponent(getToken());
+            f.style.display = 'block';
+        }
+        async function n9UploadXdc(input) {
+            const file = input.files && input.files[0];
+            if (!file) return;
+            const box = document.getElementById('n9AppList');
+            box.innerText = 'Uploading ' + file.name + '...';
+            try {
+                const res = await fetch('/api/webxdc/apps', { method: 'POST', headers: { 'X-Filename': file.name }, body: file });
+                const j = await res.json().catch(() => ({}));
+                if (!res.ok) { box.innerText = 'Not installed: ' + (j.error || res.status); input.value = ''; return; }
+            } catch (e) { box.innerText = 'Upload failed: ' + e; input.value = ''; return; }
+            input.value = '';
+            n9LoadApps();
+        }
+        n9LoadApps();
     </script>
 </body>
 </html>
