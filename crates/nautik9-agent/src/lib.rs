@@ -11,12 +11,14 @@
 //! - [`schedule`]: cron-style schedules, `Jade/crontab`, the heartbeat and their runner.
 //! - [`memory`]: embeddings client, SQLite vector/FTS5 index, hybrid search, the `embeddings` tool.
 //! - [`journal`]: daily notes that summarise earlier chats.
-//! - [`playbook`]: Jade-style Playbooks (deterministic JSON task lists run through the tools).
 //! - [`sandbox`]: the opt-in `sandbox` tool (shell/Python/Node with limits). [`script`]: note scripts
 //!   (`jade.*` in JavaScript). [`template`]: template notes. [`tot`]: the tree-of-thought reasoner.
+//! - [`playbook`], [`playbook_ext`]: Jade-style Playbooks (deterministic JSON task lists run through the tools).
+//! - [`flow`]: triggers (schedule, webhook, note_changed, sms_received) that fire approved playbooks or prompts.
 //! - [`html2md`]: page HTML to Markdown for `web_fetch`.
 
 pub mod agent;
+pub mod flow;
 pub mod html2md;
 pub mod schedule;
 pub mod journal;
@@ -26,6 +28,7 @@ pub mod sandbox;
 pub mod script;
 pub mod template;
 pub mod tot;
+pub mod playbook_ext;
 pub mod store;
 pub mod tools;
 

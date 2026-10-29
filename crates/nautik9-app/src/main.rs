@@ -15,6 +15,7 @@ use nautik9_wayfinder::{WayfinderModule, WayfinderVault};
 
 mod agent_api;
 mod agent_ext;
+mod flow_api;
 mod auth;
 mod device_sms;
 mod notes_api;
@@ -362,6 +363,12 @@ fn build_router(state: AppState, token: String) -> axum::Router {
         // Notes extras (search, graph, attachments) and the compiled-in static files.
         .merge(notes_api::routes())
         .route("/static/{*name}", get(static_assets::serve))
+        .route("/api/agent/flows", get(flow_api::flows))
+        .route("/api/agent/flows/{name}", get(flow_api::flow_show))
+        .route("/api/agent/flows/{name}/check", post(flow_api::flow_check))
+        .route("/api/agent/flows/{name}/run", post(flow_api::flow_run))
+        .route("/api/agent/flows/{name}/approve", post(flow_api::flow_approve))
+        .route("/api/agent/flows/{name}/hook", post(flow_api::flow_hook))
         .layer(axum::middleware::from_fn_with_state(
             std::sync::Arc::new(token),
             auth::require_token,
@@ -521,6 +528,10 @@ async fn serve_mobile_web(
     if let Some(r) = &state.scheduler {
         r.spawn();
         println!("Agent: scheduler running (ticks every 30 s; Jade/crontab, Jade/HEARTBEAT.md, log Jade/Logs/cron.log)");
+    }
+    if let Ok(a) = &state.agent {
+        nautik9_agent::flow::FlowRunner::new(a.clone()).spawn();
+        println!("Agent: flows running (schedule and note_changed triggers checked every 30 s; Jade/Flows/<name>.json, only approved flows fire)");
     }
     let app = build_router(state, token.clone());
 
@@ -812,6 +823,9 @@ async fn handle_sms_incoming(
         );
     }
 
+    if let Ok(a) = &state.agent {
+        nautik9_agent::flow::spawn_event(a.clone(), nautik9_agent::flow::Event::sms(&new_msg.sender, &new_msg.body));
+    }
     state.sms_messages.write().await.insert(0, new_msg.clone());
 
     axum::Json(serde_json::json!({
@@ -925,6 +939,9 @@ async fn handle_sms_ingest(
         };
         if work_cfg.enabled {
             apply_draft(&mut msg, &state.lemonade, &work_cfg, &state.vault_path, state.hardware.recommended_embedding_dim).await;
+        }
+        if let Ok(a) = &state.agent {
+            nautik9_agent::flow::spawn_event(a.clone(), nautik9_agent::flow::Event::sms(&msg.sender, &msg.body));
         }
         state.sms_messages.write().await.insert(0, msg);
         added += 1;
@@ -1200,6 +1217,142 @@ mod tests {
         assert!(s == StatusCode::OK && r["ok"] == false, "a failed run is reported as failed: {r}");
         let (s, sh) = call(&a, "GET", &format!("{u}/hello"), Some(TOKEN), None).await;
         assert!(s == StatusCode::OK && sh["approved"] == true);
+    }
+
+    async fn vault_note(dir: &std::path::Path, path: &str) -> Option<String> {
+        let v = nautik9_wayfinder::WayfinderVault::new(&dir.join("vault.db")).unwrap();
+        nautik9_agent::tools::note_by_path(&v, path).await.unwrap().map(|n| n.content)
+    }
+
+    async fn seed_flow_vault(dir: &std::path::Path, flows: &[(&str, serde_json::Value)]) {
+        let v = nautik9_wayfinder::WayfinderVault::new(&dir.join("vault.db")).unwrap();
+        let pb = serde_json::json!({"name":"mark","vars":{"who":"nobody"},"tasks":[
+            {"do":"save","args":{"path":"Out/marker.md","content":"hello {{ who }}","append":true}}]});
+        nautik9_agent::tools::write_note(&v, "Jade/Playbooks/mark.json", &pb.to_string()).await.unwrap();
+        for (name, doc) in flows {
+            nautik9_agent::tools::write_note(&v, &format!("Jade/Flows/{name}.json"), &doc.to_string()).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn flows_api_list_check_run_approve_and_hook() {
+        let d = tempfile::tempdir().unwrap();
+        let flow = serde_json::json!({"name":"inbound","trigger":{"type":"webhook"},"action":{"playbook":"mark","vars":{"who":"{{ trigger.payload.name }}"}}});
+        let nohook = serde_json::json!({"name":"manualonly","trigger":{"type":"manual"},"action":{"playbook":"mark"}});
+        seed_flow_vault(d.path(), &[("inbound", flow.clone()), ("manualonly", nohook)]).await;
+        let a = app(d.path());
+        let u = "/api/agent/flows";
+        // every flow route needs the token, the webhook included
+        for (m, uri) in [("GET", u.to_string()), ("GET", format!("{u}/inbound")), ("POST", format!("{u}/inbound/check")), ("POST", format!("{u}/inbound/run")), ("POST", format!("{u}/inbound/approve")), ("POST", format!("{u}/inbound/hook"))] {
+            let (s, _) = call(&a, m, &uri, None, Some(serde_json::json!({}))).await;
+            assert_eq!(s, StatusCode::UNAUTHORIZED, "{m} {uri}");
+        }
+        let (s, l) = call(&a, "GET", u, Some(TOKEN), None).await;
+        assert_eq!(s, StatusCode::OK);
+        let inbound = l.as_array().unwrap().iter().find(|f| f["name"] == "inbound").unwrap();
+        assert_eq!((inbound["valid"].clone(), inbound["approved"].clone(), inbound["trigger"]["type"].clone()), (serde_json::json!(true), serde_json::json!(false), serde_json::json!("webhook")));
+        let (s, c) = call(&a, "POST", &format!("{u}/inbound/check"), Some(TOKEN), None).await;
+        assert!(s == StatusCode::OK && c["ok"] == true, "{c}");
+
+        // unapproved: the hook is refused and nothing runs
+        let hook = format!("{u}/inbound/hook");
+        let (s, v) = call(&a, "POST", &hook, Some(TOKEN), Some(serde_json::json!({"name":"ann"}))).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+        assert!(vault_note(d.path(), "Out/marker.md").await.is_none());
+        // approve the flow: it fires, but its playbook is not approved yet, so that does not run
+        let (s, ap) = call(&a, "POST", &format!("{u}/inbound/approve"), Some(TOKEN), None).await;
+        assert!(s == StatusCode::OK && ap["sha256"].as_str().unwrap().len() == 64, "{ap}");
+        let (s, v) = call(&a, "POST", &hook, Some(TOKEN), Some(serde_json::json!({"name":"ann"}))).await;
+        assert!(s == StatusCode::OK && v["ok"] == false && v["detail"].as_str().unwrap().contains("not approved"), "{v}");
+        assert!(vault_note(d.path(), "Out/marker.md").await.is_none());
+        let (s, _) = call(&a, "POST", "/api/agent/playbooks/mark/approve", Some(TOKEN), None).await;
+        assert_eq!(s, StatusCode::OK);
+        let (s, v) = call(&a, "POST", &hook, Some(TOKEN), Some(serde_json::json!({"name":"ann"}))).await;
+        assert!(s == StatusCode::OK && v["ok"] == true && v["report"]["trigger"] == "flow", "{v}");
+        assert_eq!(vault_note(d.path(), "Out/marker.md").await.unwrap(), "hello ann");
+        // token in the query string works like for every route
+        let (s, _) = call(&a, "POST", &format!("{hook}?token={TOKEN}"), None, Some(serde_json::json!({"name":"bob"}))).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(vault_note(d.path(), "Out/marker.md").await.unwrap(), "hello ann\nhello bob");
+
+        // the file changes: the old approval no longer counts
+        let mut edited = flow.clone();
+        edited["action"]["vars"]["who"] = serde_json::json!("x-{{ trigger.payload.name }}");
+        seed_flow_vault(d.path(), &[("inbound", edited)]).await;
+        let (s, v) = call(&a, "POST", &hook, Some(TOKEN), Some(serde_json::json!({"name":"eve"}))).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+        assert!(v["error"].as_str().unwrap().contains("changed since"), "{v}");
+        assert_eq!(vault_note(d.path(), "Out/marker.md").await.unwrap(), "hello ann\nhello bob");
+        let (_, sh) = call(&a, "GET", &format!("{u}/inbound"), Some(TOKEN), None).await;
+        assert_eq!(sh["approved"], false);
+        // by hand the owner can still run it (manual run, playbook runs as manual)
+        let (s, v) = call(&a, "POST", &format!("{u}/inbound/run"), Some(TOKEN), Some(serde_json::json!({"payload":{"name":"hand"}}))).await;
+        assert!(s == StatusCode::OK && v["ok"] == true && v["report"]["trigger"] == "manual", "{v}");
+        assert!(vault_note(d.path(), "Out/marker.md").await.unwrap().ends_with("hello x-hand"));
+
+        // not a webhook flow / unknown flow
+        let (s, v) = call(&a, "POST", &format!("{u}/manualonly/hook"), Some(TOKEN), Some(serde_json::json!({}))).await;
+        assert_eq!(s, StatusCode::CONFLICT, "{v}");
+        let (s, _) = call(&a, "POST", &format!("{u}/nope/hook"), Some(TOKEN), Some(serde_json::json!({}))).await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+        let (s, _) = call(&a, "POST", &format!("{u}/nope/approve"), Some(TOKEN), None).await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn playbook_schedules_over_the_api_run_only_approved_playbooks() {
+        let d = tempfile::tempdir().unwrap();
+        seed_flow_vault(d.path(), &[]).await;
+        let a = app(d.path());
+        let (s, _) = call(&a, "POST", "/api/agent/schedules", Some(TOKEN), Some(serde_json::json!({"spec":"hourly","playbook":"bad name"}))).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+        let (s, _) = call(&a, "POST", "/api/agent/schedules", Some(TOKEN), Some(serde_json::json!({"spec":"whenever","playbook":"mark"}))).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+        let (s, v) = call(&a, "POST", "/api/agent/schedules", Some(TOKEN), Some(serde_json::json!({"spec":"hourly","playbook":"mark"}))).await;
+        assert!(s == StatusCode::OK && v["kind"] == "playbook" && v["payload"] == "mark", "{v}");
+        let id = v["id"].as_str().unwrap().to_string();
+        let (_, v) = call(&a, "POST", &format!("/api/agent/schedules/{id}/run"), Some(TOKEN), Some(serde_json::json!({}))).await;
+        assert!(v["last_result"].as_str().unwrap().starts_with("ERROR:") && v["last_result"].as_str().unwrap().contains("not approved"), "{v}");
+        assert!(vault_note(d.path(), "Out/marker.md").await.is_none());
+        call(&a, "POST", "/api/agent/playbooks/mark/approve", Some(TOKEN), None).await;
+        let (_, v) = call(&a, "POST", &format!("/api/agent/schedules/{id}/run"), Some(TOKEN), Some(serde_json::json!({}))).await;
+        assert!(v["last_result"].as_str().unwrap().contains("(schedule): OK"), "{v}");
+        assert_eq!(vault_note(d.path(), "Out/marker.md").await.unwrap(), "hello nobody");
+    }
+
+    #[tokio::test]
+    async fn an_incoming_text_fires_an_approved_sms_flow() {
+        let d = tempfile::tempdir().unwrap();
+        let doc = serde_json::json!({"name":"onsms","trigger":{"type":"sms_received","contains":"tide"},"action":{"playbook":"mark","vars":{"who":"{{ trigger.body }}"}}});
+        seed_flow_vault(d.path(), &[("onsms", doc)]).await;
+        let a = app(d.path());
+        call(&a, "POST", "/api/agent/playbooks/mark/approve", Some(TOKEN), None).await;
+        // not approved yet: the text arrives, nothing runs
+        call(&a, "POST", "/api/sms/incoming", Some(TOKEN), Some(serde_json::json!({"sender":"+15550001111","body":"tide table please"}))).await;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert!(vault_note(d.path(), "Out/marker.md").await.is_none());
+        call(&a, "POST", "/api/agent/flows/onsms/approve", Some(TOKEN), None).await;
+        call(&a, "POST", "/api/sms/incoming", Some(TOKEN), Some(serde_json::json!({"sender":"+15550001111","body":"unrelated"}))).await;
+        call(&a, "POST", "/api/sms/ingest", Some(TOKEN), Some(serde_json::json!({"messages":[{"id":"7","sender":"+15550002222","body":"high tide at six"}]}))).await;
+        let mut got = None;
+        for _ in 0..50 {
+            got = vault_note(d.path(), "Out/marker.md").await;
+            if got.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(got.as_deref(), Some("hello high tide at six"));
+    }
+
+    #[test]
+    fn ui_has_an_automations_tab_wired_to_the_owner_api() {
+        let html = get_mobile_html();
+        assert!(html.contains("switchTab('auto', this)") && html.contains("id=\"pane-auto\""));
+        for route in ["/api/agent/playbooks", "/api/agent/flows", "/api/agent/schedules"] {
+            assert!(html.contains(route), "{route}");
+        }
+        assert!(html.contains("data-act") && html.contains("'approve'") && html.contains("confirm("), "approve asks the owner first");
     }
 
     #[tokio::test]
