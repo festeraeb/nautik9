@@ -166,7 +166,7 @@ impl Tool for NotesSearch {
     async fn call(&self, a: &Value, c: &ToolCtx) -> Result<String, String> {
         let q = s(a, "query")?;
         let k = a["k"].as_u64().unwrap_or(8).clamp(1, 30) as usize;
-        let hits = c.vault.search(q, None, k).await.map_err(|e| e.to_string())?;
+        let hits = c.vault.search(q, k).await.map_err(|e| e.to_string())?;
         if hits.is_empty() {
             return Ok(format!("No notes match `{q}`."));
         }

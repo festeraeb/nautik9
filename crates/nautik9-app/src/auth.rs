@@ -1,7 +1,7 @@
 //! Bearer-token auth for the HTTP API.
 //!
 //! The token is generated on first run and kept in a 0600 file. Every
-//! `/api/*` route except `/api/health` (and the `/assets` image) needs
+//! `/api/*` route except `/api/health` (and the `/assets` image and `/static/` files) needs
 //! `Authorization: Bearer <token>` or `?token=<token>`.
 
 use axum::{
@@ -74,9 +74,10 @@ fn query_token(query: Option<&str>) -> Option<String> {
     query?.split('&').find_map(|kv| kv.strip_prefix("token=")).map(|v| v.to_string())
 }
 
-/// Paths that never need a token: the HTML shell (no data in it) and health.
+/// Paths that never need a token: the HTML shell (no data in it), health, and the compiled-in
+/// static files (page script, style, KaTeX): nothing private is in them.
 fn is_open(path: &str) -> bool {
-    path == "/" || path == "/api/health"
+    path == "/" || path == "/api/health" || path.starts_with("/static/")
 }
 
 pub async fn require_token(State(token): State<std::sync::Arc<String>>, req: Request, next: Next) -> Response {

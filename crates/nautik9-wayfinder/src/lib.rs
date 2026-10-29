@@ -55,6 +55,12 @@ fn strip_code(content: &str) -> String {
     out
 }
 
+/// `![[photo.png]]`-style embeds name an attachment, not a note.
+fn is_media_name(name: &str) -> bool {
+    const EXT: [&str; 14] = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "avif", "pdf", "mp3", "wav", "ogg", "m4a", "mp4", "webm"];
+    name.rsplit_once('.').is_some_and(|(_, e)| EXT.iter().any(|x| e.eq_ignore_ascii_case(x)))
+}
+
 /// `[[Note]]`, `[[Note|Label]]`, `[[Note#Heading]]` -> "Note". Unique, in order.
 pub fn parse_links(content: &str) -> Vec<String> {
     let text = strip_code(content);
@@ -66,7 +72,7 @@ pub fn parse_links(content: &str) -> Vec<String> {
         let inner = &after[..end];
         if !inner.contains('\n') {
             let target = inner.split('|').next().unwrap_or("").split('#').next().unwrap_or("").trim();
-            if !target.is_empty() && !links.iter().any(|l| l.eq_ignore_ascii_case(target)) {
+            if !target.is_empty() && !is_media_name(target) && !links.iter().any(|l| l.eq_ignore_ascii_case(target)) {
                 links.push(target.to_string());
             }
         }
@@ -224,11 +230,13 @@ impl WayfinderVault {
         Ok(())
     }
 
-    /// Keyword search (title/content/tags) plus a weak hash-fingerprint similarity. Not semantic.
-    pub async fn search(&self, query: &str, query_embedding: Option<&[f32]>, top_k: usize) -> Result<Vec<SearchResultItem>, NautikError> {
+    /// Keyword search over title, content and tags. Not semantic: meaning-based search is the
+    /// agent's embeddings index (`nautik9-agent` `memory`), used by `GET /api/notes?q=` when an
+    /// embedding endpoint is configured.
+    pub async fn search(&self, query: &str, top_k: usize) -> Result<Vec<SearchResultItem>, NautikError> {
         let conn = self.conn.lock().await;
         let mut stmt = conn
-            .prepare("SELECT id, title, content, tags_json, embedding_blob FROM vault_items")
+            .prepare("SELECT id, title, content, tags_json FROM vault_items")
             .map_err(|e| NautikError::Storage(e.to_string()))?;
 
         let query_lower = query.to_lowercase();
@@ -242,18 +250,17 @@ impl WayfinderVault {
                 let title: String = row.get(1)?;
                 let content: String = row.get(2)?;
                 let tags_json: String = row.get(3)?;
-                let embedding_blob: Option<Vec<u8>> = row.get(4)?;
-                Ok((id, title, content, tags_json, embedding_blob))
+                Ok((id, title, content, tags_json))
             })
             .map_err(|e| NautikError::Storage(e.to_string()))?;
 
         for row in rows {
-            let (id, title, content, tags_json, embedding_blob) = row.map_err(|e| NautikError::Storage(e.to_string()))?;
+            let (id, title, content, tags_json) = row.map_err(|e| NautikError::Storage(e.to_string()))?;
             let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
 
             let mut score = 0.0f32;
 
-            // 1. Keyword match (title, content, tags)
+            // Keyword match (title, content, tags)
             let title_lower = title.to_lowercase();
             let content_lower = content.to_lowercase();
             for word in &query_words {
@@ -267,19 +274,6 @@ impl WayfinderVault {
                     if tag.to_lowercase().contains(word) {
                         score += 0.5;
                     }
-                }
-            }
-
-            // 2. Cosine similarity of the hash fingerprints (weak, lexical signal)
-            if let (Some(q_emb), Some(blob)) = (query_embedding, embedding_blob) {
-                if blob.len() >= q_emb.len() * 4 {
-                    let mut doc_emb = Vec::with_capacity(q_emb.len());
-                    for chunk in blob.chunks_exact(4) {
-                        let val = f32::from_le_bytes(chunk.try_into().unwrap());
-                        doc_emb.push(val);
-                    }
-                    let cos_sim = cosine_similarity(q_emb, &doc_emb);
-                    score += cos_sim * 1.5;
                 }
             }
 
@@ -425,50 +419,6 @@ impl WayfinderVault {
     }
 }
 
-/// Compute cosine similarity between two float vectors
-pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.is_empty() || b.is_empty() || a.len() != b.len() {
-        return 0.0;
-    }
-    let mut dot = 0.0f32;
-    let mut norm_a = 0.0f32;
-    let mut norm_b = 0.0f32;
-    for i in 0..a.len() {
-        dot += a[i] * b[i];
-        norm_a += a[i] * a[i];
-        norm_b += b[i] * b[i];
-    }
-    if norm_a <= 0.0 || norm_b <= 0.0 {
-        return 0.0;
-    }
-    dot / (norm_a.sqrt() * norm_b.sqrt())
-}
-
-/// A character-position hash fingerprint of the text, L2-normalised.
-///
-/// This is NOT a semantic embedding: it only rewards texts that share the same
-/// bytes at similar positions. Vault search combines it with keyword matching,
-/// so call the result keyword search, not semantic search. Real embeddings
-/// (embeddinggemma via an OpenAI-compatible /embeddings endpoint) are planned.
-pub fn generate_fast_embedding(text: &str, dim: usize) -> Vec<f32> {
-    let mut vec = vec![0.0f32; dim];
-    if text.is_empty() {
-        return vec;
-    }
-    for (i, byte) in text.as_bytes().iter().enumerate() {
-        let idx = (i * 31 + (*byte as usize)) % dim;
-        vec[idx] += 1.0;
-    }
-    // Normalize
-    let norm: f32 = vec.iter().map(|v| v * v).sum::<f32>().sqrt();
-    if norm > 0.0 {
-        for v in vec.iter_mut() {
-            *v /= norm;
-        }
-    }
-    vec
-}
-
 /// A FIXED 8-step checklist with the task name filled in. It does not read the task or call a model.
 pub fn decompose_task(task_description: &str) -> Vec<String> {
     vec![
@@ -542,9 +492,8 @@ impl NautikModule for WayfinderModule {
                     );
                 }
 
-                // 2. Generate embedding & perform search
-                let query_emb = generate_fast_embedding(query, self.embedding_dim);
-                let results = self.vault.search(query, Some(&query_emb), *top_k).await?;
+                // 2. Keyword search
+                let results = self.vault.search(query, *top_k).await?;
 
                 // 3. If hit found, alert Mack
                 {
@@ -595,12 +544,8 @@ mod tests {
     use nautik9_core::HardwareProfile;
 
     #[tokio::test]
-    async fn test_wayfinder_vault_search_and_embedding() {
+    async fn test_wayfinder_vault_keyword_search() {
         let vault = WayfinderVault::in_memory().unwrap();
-        let dim = 768;
-
-        let emb1 = generate_fast_embedding("Mack surveying underwater shipwreck with sonar", dim);
-        let emb2 = generate_fast_embedding("Grocery shopping list bananas milk", dim);
 
         vault
             .put_item(
@@ -608,7 +553,7 @@ mod tests {
                 "Lake Huron Survey Note",
                 "Sonar return shows magnetic anomaly near flag buoy #4. Mack spotted bubbles.",
                 &["sonar".to_string(), "survey".to_string(), "shipwreck".to_string()],
-                Some(&emb1),
+                None,
             )
             .await
             .unwrap();
@@ -619,13 +564,12 @@ mod tests {
                 "Kitchen Supplies",
                 "Buy 2% milk and fresh bread from grocery.",
                 &["shopping".to_string()],
-                Some(&emb2),
+                None,
             )
             .await
             .unwrap();
 
-        let query_emb = generate_fast_embedding("sonar shipwreck anomaly", dim);
-        let results = vault.search("sonar anomaly", Some(&query_emb), 5).await.unwrap();
+        let results = vault.search("sonar anomaly", 5).await.unwrap();
 
         assert!(!results.is_empty());
         assert_eq!(results[0].id, "item-1");
@@ -649,7 +593,6 @@ mod tests {
         module.init(&mut ctx).await.unwrap();
 
         // Index an item
-        let emb = generate_fast_embedding("Mack on the boat with flag", 768);
         module
             .vault
             .put_item(
@@ -657,7 +600,7 @@ mod tests {
                 "First NautiK9 Boat",
                 "Photo of Mack from front of phone and survey vessel with flag.",
                 &["mack".to_string(), "nautik9".to_string()],
-                Some(&emb),
+                None,
             )
             .await
             .unwrap();
@@ -684,6 +627,12 @@ mod tests {
     fn parses_links_aliases_and_ignores_code() {
         let c = "See [[Alpha]] and [[Beta|the beta]] and [[Alpha#Intro]].\n`[[InCode]]`\n```\n[[Fenced]]\n```\n[[ ]] [[broken";
         assert_eq!(parse_links(c), vec!["Alpha", "Beta"]);
+    }
+
+    #[test]
+    fn image_embeds_are_not_note_links_but_note_embeds_are() {
+        let c = "![[photo.PNG|300]] ![[Other note]] [[report.pdf]] [[v1.2 plan]]";
+        assert_eq!(parse_links(c), vec!["Other note", "v1.2 plan"]);
     }
 
     #[test]

@@ -193,7 +193,7 @@ impl HostState {
             }
             "search" => {
                 let k = a["limit"].as_u64().unwrap_or(8).clamp(1, 30) as usize;
-                let hits = h.block_on(ctx.vault.search(s("query")?, None, k)).map_err(|e| e.to_string())?;
+                let hits = h.block_on(ctx.vault.search(s("query")?, k)).map_err(|e| e.to_string())?;
                 Ok(json!(hits.iter().map(|x| json!({"title": x.title, "score": x.score, "snippet": x.snippet})).collect::<Vec<_>>()))
             }
             "write" => {

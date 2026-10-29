@@ -11,6 +11,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/notes-plus.css">
     <style>
         :root {
             --bg: #0a0e17;
@@ -1101,6 +1102,8 @@
 
     <!-- 3. Obsidian-grade Vault Notes Pane -->
     <section id="pane-vault" class="section-pane">
+        <!-- notes workspace (static/notes-plus.js): search, split editor, graph, math, embeds -->
+        <div id="notesPlus"></div>
         <div class="card">
             <div class="card-header">
                 <span class="card-title">📝 Create Field Note</span>
@@ -1977,5 +1980,6 @@
         loadFleetTelemetry();
         renderOfflineModel();
     </script>
+    <script src="/static/notes-plus.js"></script>
 </body>
 </html>
