@@ -6,6 +6,10 @@
 //!   DELETE /api/agent/sessions/{id}
 //!   POST   /api/agent/sessions/{id}/rate    {idx, rating: 1 | -1 | null}
 //!   POST   /api/agent/sessions/{id}/retry   -> TurnResult for the last user message, answered again
+//!   GET    /api/agent/schedules             -> [Schedule]
+//!   POST   /api/agent/schedules             {spec, prompt} -> Schedule (400 on an unknown spec)
+//!   DELETE /api/agent/schedules/{id}
+//!   POST   /api/agent/schedules/{id}/run    run it now -> Schedule (409 while another run is going)
 //!   GET    /api/agent/export?format=openai|sharegpt&rated=up|down|any -> JSONL of stored chats
 //!
 //!   POST   /api/agent/web_search            {query, k?} -> {result}: this server's web search, for
@@ -14,6 +18,7 @@
 //! Files in the config dir: `sessions.db`, `trajectories.jsonl` (every model call), optional
 //! `secrets.json` (`{"NAME": "value"}` for http_request; keep it 0600) and optional `agent.json`:
 //!   max_steps, context_chars, max_tokens;
+//!   heartbeat_minutes: run Jade/HEARTBEAT.md as a turn every N minutes (0 or missing = off);
 //!   search: backends in order, each "searx:<url>", "remote" or "duckduckgo"
 //!     (default: "remote" if remote_url is set, then "searx:<searx_url or $NAUTIK9_SEARX_URL>"
 //!     if set, then "duckduckgo");
@@ -371,4 +376,57 @@ pub async fn export(State(st): State<AppState>, Query(q): Query<HashMap<String, 
         lines.push(line.to_string());
     }
     ([(axum::http::header::CONTENT_TYPE, "application/x-ndjson")], lines.join("\n") + if lines.is_empty() { "" } else { "\n" }).into_response()
+}
+
+/// `heartbeat_minutes` from agent.json (0 = off).
+pub fn heartbeat_minutes(config_dir: &std::path::Path) -> Result<u64, String> {
+    Ok(agent_conf(config_dir)?["heartbeat_minutes"].as_u64().unwrap_or(0))
+}
+
+pub async fn schedules(State(st): State<AppState>) -> Response {
+    match agent_of(&st) {
+        Ok(a) => match nautik9_agent::schedule::Schedules::new(&a.ctx.store).list().await {
+            Ok(l) => Json(json!(l)).into_response(),
+            Err(e) => bad(StatusCode::INTERNAL_SERVER_ERROR, e),
+        },
+        Err(r) => r,
+    }
+}
+
+pub async fn add_schedule(State(st): State<AppState>, Json(p): Json<Value>) -> Response {
+    let a = match agent_of(&st) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let (Some(spec), Some(prompt)) = (p["spec"].as_str(), p["prompt"].as_str()) else {
+        return bad(StatusCode::BAD_REQUEST, "need string `spec` and `prompt`");
+    };
+    match nautik9_agent::schedule::Schedules::new(&a.ctx.store).add(spec, prompt, chrono::Local::now().fixed_offset()).await {
+        Ok(s) => Json(json!(s)).into_response(),
+        Err(e) => bad(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+pub async fn delete_schedule(State(st): State<AppState>, Path(id): Path<String>) -> Response {
+    match agent_of(&st) {
+        Ok(a) => match nautik9_agent::schedule::Schedules::new(&a.ctx.store).remove(&id).await {
+            Ok(true) => Json(json!({"ok": true})).into_response(),
+            Ok(false) => bad(StatusCode::NOT_FOUND, "no such schedule"),
+            Err(e) => bad(StatusCode::INTERNAL_SERVER_ERROR, e),
+        },
+        Err(r) => r,
+    }
+}
+
+pub async fn run_schedule(State(st): State<AppState>, Path(id): Path<String>) -> Response {
+    if let Err(r) = agent_of(&st) {
+        return r;
+    }
+    let Some(runner) = &st.scheduler else { return bad(StatusCode::SERVICE_UNAVAILABLE, "the scheduler is not running") };
+    match runner.run_now(&id).await {
+        Ok(s) => Json(json!(s)).into_response(),
+        Err(e) if e.starts_with("busy") => bad(StatusCode::CONFLICT, e),
+        Err(e) if e.starts_with("no schedule") => bad(StatusCode::NOT_FOUND, e),
+        Err(e) => bad(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
 }

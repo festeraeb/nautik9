@@ -35,7 +35,10 @@ NautiK9 follows the design of **Jade Vault** (MIT, lucky-edgelord/jade-vault; v2
 | Messenger bridges (Vector, Discord) | not planned | the phone SMS bridge over adb is the equivalent here |
 | Agent tools | partial | notes search/read/list/write/edit, memory, web_search (SearXNG, a home server, DuckDuckGo), web_fetch (HTML to Markdown), http_request, chat_history, skill, delegate, and every tool of configured MCP servers (the CESARops fleet MCP; a phone reaches it through its home server). No local shell/node/Python sandbox |
 | Memory, SOUL/AGENTS/SYSTEM steering, skills | done | `Jade/Memory.md` bullets (keyword-ranked when long), `Jade/SOUL.md`, `AGENTS.md` + `Jade/AGENTS.md`, `Jade/SYSTEM.md`, `Jade/skills/<name>/SKILL.md`. Journal and embedding-ranked memory not yet |
-| Schedules, crontab, heartbeat | not planned | |
+| Schedules (prompt runs) | done (API + tool) | `schedule` tool and `/api/agent/schedules*`; 5-field cron or simple English (`every N minutes\|hours`, `hourly`, `daily at`, `weekdays at`, `every monday at`), unknown text rejected; local time zone; each schedule has its own session "⏰ <spec>". Only kind `prompt`: a `flow` kind is not built. Missed runs while the server is down are not replayed. DST: a skipped wall-clock time runs once just after the gap, a repeated one runs at its first occurrence. No UI yet |
+| `Jade/crontab` note | done | lines `<5 cron fields> prompt <text>`, re-read every 30 s tick; bad lines go to `Jade/Logs/cron.log` once, never skipped silently. Entries are in memory only: a restart recomputes their next run from "now" |
+| Heartbeat (`Jade/HEARTBEAT.md`) | done (opt-in) | `heartbeat_minutes` in `agent.json` (default 0 = off); one turn in the session "♥ Heartbeat" with the note as prompt, skipped while the note is empty. First beat comes N minutes after start |
+| Run log `Jade/Logs/cron.log` | done | one line per run (ok/ERROR) appended by the runner, newest 500 lines kept; one run at a time |
 | Flows (n8n-style automations) | not planned | |
 | Scripting (`jade.*`), note scripts, templates | not planned | |
 | Trajectory log / fine-tuning export | done | every model call in `trajectories.jsonl`; `/api/agent/export?format=openai\|sharegpt&rated=up` |

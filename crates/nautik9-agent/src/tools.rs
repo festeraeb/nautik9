@@ -92,6 +92,7 @@ impl Registry {
             Arc::new(HttpRequest),
             Arc::new(ChatHistory),
             Arc::new(SkillTool),
+            Arc::new(crate::schedule::ScheduleTool),
         ];
         Registry { tools }
     }
