@@ -8,3 +8,7 @@ phone_screen.png
 target/
 serve.log
 *.log
+
+# Android build output (signing keys live in ~/.config/nautik9-android, never here)
+android/build/
+*.jks

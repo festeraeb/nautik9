@@ -96,15 +96,7 @@ pub fn parse_adb_sms_rows(text: &str, limit: usize) -> Vec<SmsMessage> {
             _ => continue,
         };
 
-        let timestamp_str = if let Ok(ms) = date_val.parse::<i64>() {
-            let dt = Local.timestamp_millis_opt(ms).single();
-            match dt {
-                Some(d) => d.format("%I:%M %p").to_string(),
-                None => "Recent".to_string(),
-            }
-        } else {
-            "Recent".to_string()
-        };
+        let timestamp_str = format_sms_time(date_val.parse::<i64>().ok());
 
         messages.push(SmsMessage {
             id: format!("sms-{}", id_val),
@@ -122,17 +114,30 @@ pub fn parse_adb_sms_rows(text: &str, limit: usize) -> Vec<SmsMessage> {
     messages
 }
 
+/// Phone-style time for an SMS date in epoch milliseconds.
+pub fn format_sms_time(date_ms: Option<i64>) -> String {
+    match date_ms.and_then(|ms| Local.timestamp_millis_opt(ms).single()) {
+        Some(d) => d.format("%I:%M %p").to_string(),
+        None => "Recent".to_string(),
+    }
+}
+
+/// Keep only the characters a phone number can have (digits and '+').
+pub fn clean_recipient(sender: &str) -> Result<String, String> {
+    let clean: String = sender.chars().filter(|c| c.is_ascii_digit() || *c == '+').collect();
+    if clean.is_empty() {
+        return Err(format!("Invalid recipient address: {}", sender));
+    }
+    Ok(clean)
+}
+
 /// Opens the phone's SMS composer with the reply filled in (SENDTO intent).
 /// Nothing is sent: the user still has to press send on the phone.
 pub async fn dispatch_sms_to_phone(sender: &str, body: &str) -> Result<String, String> {
     let dev = get_active_adb_device().await
         .ok_or_else(|| "No ADB device connected to dispatch SMS".to_string())?;
 
-    // Filter valid phone chars
-    let clean_target: String = sender.chars().filter(|c| c.is_ascii_digit() || *c == '+').collect();
-    if clean_target.is_empty() {
-        return Err(format!("Invalid recipient address: {}", sender));
-    }
+    let clean_target = clean_recipient(sender)?;
 
     let output = tokio::process::Command::new("adb")
         .args(&[

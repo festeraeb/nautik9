@@ -11,6 +11,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/notes-plus.css">
     <style>
         :root {
             --bg: #0a0e17;
@@ -897,6 +898,21 @@
             color: var(--text-sub);
         }
     </style>
+
+    <!-- Voice, avatar talking state and mini apps (separate block) -->
+    <style>
+        .avatar-bezel.talking { animation: n9-ring 0.9s ease-in-out infinite; }
+        .avatar-bezel.talking .avatar-img { animation: n9-bob 0.45s ease-in-out infinite alternate; }
+        .avatar-bezel.mood-excited { background: var(--emerald, #34d399); }
+        .avatar-bezel.mood-concerned { background: var(--rose, #fb7185); }
+        @keyframes n9-bob { from { transform: translateY(0) scale(1); } to { transform: translateY(-2px) scale(1.04); } }
+        @keyframes n9-ring { 0%, 100% { box-shadow: 0 2px 8px rgba(0,0,0,.4); } 50% { box-shadow: 0 0 14px 3px rgba(56,189,248,.65); } }
+        @media (prefers-reduced-motion: reduce) { .avatar-bezel.talking, .avatar-bezel.talking .avatar-img { animation: none; } }
+        #n9VoiceNote { font-size: 0.72rem; color: var(--text-sub, #94a3b8); margin-top: 2px; min-height: 1em; }
+        .n9-app-row { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid rgba(148,163,184,.2); font-size: 0.85rem; }
+        .n9-app-row span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        #n9AppFrame { width: 100%; height: 360px; border: 1px solid rgba(148,163,184,.3); border-radius: 8px; margin-top: 8px; background: #fff; display: none; }
+    </style>
 </head>
 <body>
 
@@ -910,11 +926,11 @@
             <div class="cockpit-meta">
                 <div class="vessel-title-row">
                     <div class="vessel-title">Mighty Mack • Thom's NautiDog 🐾</div>
-                    <span class="vessel-badge">S25 ULTRA</span>
+                    <span class="vessel-badge" id="hostBadge">WEB</span>
                 </div>
                 <div class="status-pill" id="avatarBadge">
                     <span class="pulse-light"></span>
-                    <span id="avatarStateText">Mack Watching Helm • All Systems Sound</span>
+                    <span id="avatarStateText">Mack is on watch</span>
                 </div>
             </div>
         </div>
@@ -949,6 +965,7 @@
             <button class="tab-btn" onclick="switchTab('senses', this)">📡 Senses</button>
             <button class="tab-btn" onclick="switchTab('fleet', this)">🚀 Fleet Deck</button>
             <button class="tab-btn" onclick="switchTab('lemonade', this)">💬 Chat</button>
+            <button class="tab-btn" onclick="switchTab('auto', this)">&#9881; Automations</button>
         </nav>
     </div>
 
@@ -979,6 +996,7 @@
                 Asked in this order; the first that answers wins. If none answer you get an error, never an invented reply. Edit providers.json in the config folder to change the list.
             </p>
             <div id="providersList" style="display:flex;flex-direction:column;gap:8px;"></div>
+            <div id="offlineModelBox" style="display:none;margin-top:10px;font-size:0.85rem;"></div>
         </div>
 
         <!-- Quick keyword search -->
@@ -1044,7 +1062,7 @@
         <!-- Incoming SMS Inbox Feed -->
         <div class="card">
             <div class="card-header">
-                <span class="card-title">📥 S25 Ultra Live Text Stream</span>
+                <span class="card-title">📥 Phone Text Stream</span>
                 <button class="btn-mini" onclick="loadSmsInbox(true)">🔄 Sync Device SMS</button>
             </div>
             <div id="smsInboxContainer" style="margin-top:8px;">
@@ -1083,15 +1101,15 @@
                 <span class="card-badge" id="totBudgetBadge">Budget: 12 Calls</span>
             </div>
             <p style="font-size:0.84rem;color:var(--text-sub);margin-bottom:12px;">
-                Planned, not built yet. Earlier versions showed a fixed template with made-up verifier results; this now reports that honestly.
+                The model proposes several next thoughts, scores each 0-10, keeps the best and expands them, then answers from the winning path. The scorer is the same model, so scores are its own opinion. Up to 12 model calls; it can take a minute or two.
             </p>
             <div class="input-group">
-                <input type="text" id="totProblem" value="Survey Thunder Bay Corridor" placeholder="Enter high-level objective..." onkeydown="if(event.key==='Enter') runToT()">
+                <input type="text" id="totProblem" value="" placeholder="A problem to reason through, e.g. plan a sonar survey of a 2 km wreck field in one day" onkeydown="if(event.key==='Enter') runToT()">
                 <button class="btn-primary btn-gold" id="btnRunToT" onclick="runToT()">Reason</button>
             </div>
             <div id="totTreeContainer" class="tot-tree">
                 <div style="font-size:0.84rem;color:var(--text-sub);text-align:center;padding:12px;">
-                    Not implemented yet.
+                    The tree appears here.
                 </div>
             </div>
             <div id="totWinningPlanContainer"></div>
@@ -1100,6 +1118,8 @@
 
     <!-- 3. Obsidian-grade Vault Notes Pane -->
     <section id="pane-vault" class="section-pane">
+        <!-- notes workspace (static/notes-plus.js): search, split editor, graph, math, embeds -->
+        <div id="notesPlus"></div>
         <div class="card">
             <div class="card-header">
                 <span class="card-title">📝 Create Field Note</span>
@@ -1128,15 +1148,15 @@
         <div class="card">
             <div class="card-header">
                 <span class="card-title">📍 GPS Survey Radar</span>
-                <span class="card-badge" id="gpsBadge">Standby</span>
+                <span class="card-badge" id="gpsBadge">No fix</span>
             </div>
             <div class="radar-box">
                 <div class="radar-scope">
                     <div class="radar-beam"></div>
                     <div class="radar-blip"></div>
                 </div>
-                <div class="coord-readout" id="gpsReadout">Lat: 45.031200° | Lon: -83.435200°</div>
-                <div style="font-size:0.75rem;color:var(--text-sub);margin-top:4px;" id="gpsDetail">Thunder Bay Shipwreck Corridor • Accuracy ±1.5m</div>
+                <div class="coord-readout" id="gpsReadout">No position yet</div>
+                <div style="font-size:0.75rem;color:var(--text-sub);margin-top:4px;" id="gpsDetail">Press the button for a live fix from the phone.</div>
             </div>
             <button class="btn-primary" style="width:100%;" onclick="acquireGPS()">🎯 Acquire Live GPS Coordinates</button>
         </div>
@@ -1156,8 +1176,9 @@
                 </div>
             </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px;">
-                <button class="btn-primary" onclick="playHaptic()">📳 Haptic Pulse</button>
-                <button class="btn-primary btn-gold" onclick="toggleTorch()">🔦 Torch Toggle</button>
+                <button class="btn-primary" onclick="playHaptic(true)">📳 Haptic Pulse</button>
+                <button class="btn-primary btn-gold" id="torchBtn" onclick="toggleTorch()">🔦 Torch Toggle</button>
+                <div id="controlStatus" style="font-size:0.78rem;color:var(--text-sub);margin-top:8px;"></div>
             </div>
         </div>
     </section>
@@ -1205,14 +1226,15 @@
     <section id="pane-lemonade" class="section-pane">
         <div class="card">
             <div class="card-header">
-                <span class="card-title">💬 Chat with your model endpoints</span>
+                <span class="card-title">💬 Chat with Mack (agent: notes, memory, web, fleet tools)</span>
+                <button class="btn-primary" style="padding:4px 10px;font-size:0.75rem" onclick="newChat()">New chat</button>
                 <label style="font-size:0.78rem;color:var(--text-sub);display:flex;align-items:center;gap:6px;">
                     <input type="checkbox" id="offlineToggle"> Offline endpoints only
                 </label>
             </div>
             <div class="chat-stream" id="chatStream">
                 <div class="msg-bubble msg-mack">
-                    🐾 Mack is on the bridge. Ask a question; the answer shows which model and endpoint produced it. If no endpoint answers you will see an error here.
+                    🐾 Mack is on the bridge. He can search and edit your notes, remember things, search and read the web, and use the fleet tools. Each answer lists the tools he used and the model that answered. Tick "Offline endpoints only" for a plain answer from an offline model (no tools).
                 </div>
             </div>
             <div class="input-group">
@@ -1220,6 +1242,50 @@
                 <button class="btn-primary" onclick="doChat()">Send</button>
             </div>
         </div>
+        <div class="card" id="n9AppsCard">
+            <div class="card-header">
+                <span class="card-title">🧩 Mini apps (.xdc, offline, sandboxed, no network)</span>
+                <label class="btn-primary" style="padding:4px 10px;font-size:0.75rem;cursor:pointer">Add .xdc
+                    <input type="file" accept=".xdc,application/zip" style="display:none" onchange="n9UploadXdc(this)">
+                </label>
+            </div>
+            <div id="n9AppList" style="font-size:0.85rem;color:var(--text-sub)">Loading...</div>
+            <iframe id="n9AppFrame" sandbox="allow-scripts allow-same-origin" title="Mini app"></iframe>
+        </div>
+    </section>
+
+    <!-- 7. Automations: playbooks, flows, schedules (owner actions; the model cannot approve) -->
+    <section id="pane-auto" class="section-pane">
+        <style>
+            .au-row { border-top: 1px solid rgba(148,163,184,0.25); padding: 10px 0; font-size: 0.85rem; }
+            .au-row:first-child { border-top: none; }
+            .au-name { font-weight: 700; }
+            .au-sub { color: var(--text-sub); font-size: 0.78rem; margin-top: 2px; word-break: break-word; }
+            .au-badge { display: inline-block; border-radius: 8px; padding: 1px 7px; font-size: 0.72rem; margin-left: 6px; background: rgba(148,163,184,0.2); }
+            .au-ok { color: var(--emerald); background: var(--emerald-soft); }
+            .au-bad { color: var(--rose); background: rgba(244,63,94,0.12); }
+            .au-btns { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; }
+            .au-btns button, .au-form button { border: 1px solid rgba(148,163,184,0.5); background: transparent; color: inherit; border-radius: 8px; padding: 4px 10px; font-size: 0.78rem; cursor: pointer; }
+            .au-form { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+            .au-form input, .au-form select { flex: 1 1 140px; min-width: 0; padding: 5px 8px; border-radius: 8px; border: 1px solid rgba(148,163,184,0.5); background: transparent; color: inherit; font-size: 0.82rem; }
+            #auOut { white-space: pre-wrap; word-break: break-word; font-size: 0.76rem; max-height: 320px; overflow: auto; margin: 0; }
+        </style>
+        <div class="card">
+            <div class="card-header"><span class="card-title">&#9881; Automations</span>
+                <button class="btn-primary" style="padding:4px 10px;font-size:0.75rem" onclick="loadAuto()">Refresh</button></div>
+            <div style="font-size:0.78rem;color:var(--text-sub)">Playbooks and flows are notes (<code>Jade/Playbooks/</code>, <code>Jade/Flows/</code>). Only you approve them here; a changed file needs approval again. Unapproved playbooks and flows never run on their own.</div>
+        </div>
+        <div class="card"><div class="card-header"><span class="card-title">Playbooks</span></div><div id="auPlaybooks">Loading...</div></div>
+        <div class="card"><div class="card-header"><span class="card-title">Flows</span></div><div id="auFlows">Loading...</div></div>
+        <div class="card"><div class="card-header"><span class="card-title">Schedules</span></div><div id="auSchedules">Loading...</div>
+            <div class="au-form">
+                <input id="auSpec" placeholder="when: daily at 08:00, every 30 minutes, 0 9 * * 1-5">
+                <select id="auKind"><option value="prompt">ask Mack (prompt)</option><option value="playbook">run playbook</option></select>
+                <input id="auText" placeholder="prompt text, or playbook name">
+                <button onclick="auAddSchedule()">Add schedule</button>
+            </div>
+        </div>
+        <div class="card"><div class="card-header"><span class="card-title">Result</span></div><pre id="auOut">Nothing yet.</pre></div>
     </section>
 
     <script>
@@ -1258,6 +1324,55 @@
         function esc(v) {
             return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
         }
+        // ---- NautiK9 Android app bridge (absent in a plain browser) ----
+        // The app holds READ_SMS and opens the composer; the server never touches the phone.
+        const AppBridge = window.NautiK9Android || null;
+        async function pushAppInbox() {
+            if (!AppBridge) return;
+            try {
+                const rows = JSON.parse(AppBridge.readInbox(10));
+                if (rows.error) { console.warn('inbox: ' + rows.error); return; }
+                await fetch('/api/sms/ingest', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ messages: rows })
+                });
+            } catch (e) { console.warn('inbox push failed: ' + e); }
+        }
+        // The server hands back {to, body}; open the phone's composer, then report it opened.
+        async function openComposer(id, composer) {
+            let opened = false;
+            if (AppBridge) {
+                opened = AppBridge.openComposer(composer.to, composer.body);
+            } else {
+                window.location.href = 'sms:' + encodeURIComponent(composer.to) + '?body=' + encodeURIComponent(composer.body);
+                opened = true;
+            }
+            if (opened) {
+                await fetch('/api/sms/action', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id, action: 'opened' })
+                });
+            }
+            return opened;
+        }
+        function renderOfflineModel() {
+            if (!AppBridge) return;
+            const box = document.getElementById('offlineModelBox');
+            box.style.display = 'block';
+            let st = {};
+            try { st = JSON.parse(AppBridge.offlineModelStatus()); } catch (e) {}
+            if (st.state === 'ready') {
+                box.innerHTML = `On-device model: <b>${esc(st.file)}</b> (${esc(st.size_mb)} MB), ${st.running ? 'running' : 'not running'}`;
+            } else if (st.state === 'downloading') {
+                box.innerHTML = `On-device model downloading: ${esc(st.done_mb)} / ${esc(st.size_mb)} MB`;
+                setTimeout(renderOfflineModel, 3000);
+            } else {
+                box.innerHTML = `No on-device model yet, so with no network nothing can answer. ` +
+                    `<button class="btn" onclick="AppBridge.downloadOfflineModel();setTimeout(renderOfflineModel,1500)">Download ${esc(st.default_name || 'model')} (${esc(st.default_size_mb || '?')} MB)</button>`;
+            }
+        }
         // Mack picture needs the token too, so it is fetched with the header.
         (async function () {
             try {
@@ -1286,10 +1401,25 @@
             } catch (e) {}
         }
 
-        function playHaptic() {
-            if (navigator.vibrate) {
-                navigator.vibrate([60, 40, 60]);
+        // ---- Phone controls: the app's bridge (window.NautiK9Android) when it is there, else the browser API.
+        function controlStatus(t, bad) {
+            const el = document.getElementById('controlStatus');
+            if (el) { el.innerText = t; el.style.color = bad ? '#fca5a5' : 'var(--text-sub)'; }
+        }
+        function bridgeCall(name, ...args) {
+            const b = window.NautiK9Android;
+            if (!b || typeof b[name] !== 'function') return null;
+            try { return JSON.parse(b[name](...args)); } catch (e) { return { error: String(e) }; }
+        }
+        // Silent pulse for every button press; the Haptic Pulse button reports what happened.
+        function playHaptic(report) {
+            const r = bridgeCall('vibrate', '60,40,60');
+            if (r) {
+                if (report) controlStatus(r.ok ? 'Vibrated (phone app).' : 'Vibrate failed: ' + r.error, !r.ok);
+                return;
             }
+            const ok = !!(navigator.vibrate && navigator.vibrate([60, 40, 60]));
+            if (report) controlStatus(ok ? 'Vibrate asked of the browser (it does not say whether the phone did it).' : 'This browser cannot vibrate. Use the NautiK9 phone app.', !ok);
         }
 
         function triggerBark() {
@@ -1308,6 +1438,7 @@
             if (tabId === 'vault') loadNotes();
             if (tabId === 'senses') initSensors();
             if (tabId === 'fleet') loadFleetTelemetry();
+            if (tabId === 'auto') loadAuto();
         }
 
         function selectTier(card, tierName, engine) {
@@ -1362,12 +1493,12 @@
 
                     el.innerHTML = `
                         <div class="tot-node-header">
-                            <span class="tot-node-title">${node.label}</span>
+                            <span class="tot-node-title">${esc(node.label)}</span>
                             <span class="tot-score-pill ${pillClass}">Score: ${scorePct}%</span>
                         </div>
-                        <div class="tot-desc">${node.hypothesis}</div>
+                        <div class="tot-desc">${esc(node.hypothesis)}</div>
                         <div class="tot-checks">
-                            ${node.verifier_checks.map(c => `<div>• ${c}</div>`).join('')}
+                            ${node.verifier_checks.map(c => `<div>• ${esc(c)}</div>`).join('')}
                         </div>
                     `;
                     container.appendChild(el);
@@ -1378,7 +1509,8 @@
                     planEl.className = 'tot-plan-box';
                     planEl.innerHTML = `
                         <div class="tot-plan-title">🏆 Winning Plan (Branch ${data.winning_branch_id}):</div>
-                        ${data.winning_plan.map(step => `<div class="tot-plan-step">• ${step}</div>`).join('')}
+                        ${data.winning_plan.map(step => `<div class="tot-plan-step">• ${esc(step)}</div>`).join('')}
+                        ${data.answer ? `<div class="tot-plan-step" style="margin-top:8px"><b>Answer:</b> ${esc(data.answer)}</div><div class="tot-plan-step" style="opacity:.7">Scores are the model grading its own steps (${data.model_calls} model calls).</div>` : ''}
                     `;
                     planContainer.appendChild(planEl);
                 }
@@ -1499,63 +1631,97 @@
             }
         }
 
-        // Senses: GPS & Battery
-        function acquireGPS() {
-            playHaptic();
+        // Senses: GPS & Battery. Only real readings are shown; a failure says why.
+        function showFix(f) {
             const readout = document.getElementById('gpsReadout');
             const detail = document.getElementById('gpsDetail');
             const badge = document.getElementById('gpsBadge');
-            badge.innerText = "Acquiring...";
-            badge.style.color = "var(--gold)";
-
-            if ('geolocation' in navigator) {
-                navigator.geolocation.getCurrentPosition(
-                    pos => {
-                        const lat = pos.coords.latitude.toFixed(6);
-                        const lon = pos.coords.longitude.toFixed(6);
-                        readout.innerText = `Lat: ${lat}° | Lon: ${lon}°`;
-                        detail.innerText = `Accuracy: ±${pos.coords.accuracy.toFixed(1)}m | Alt: ${pos.coords.altitude || 0}m`;
-                        badge.innerText = "Locked";
-                        badge.style.color = "var(--emerald)";
-                    },
-                    err => {
-                        readout.innerText = "Lat: 45.031200° | Lon: -83.435200°";
-                        detail.innerText = "Default: Thunder Bay Shipwreck Corridor";
-                        badge.innerText = "Cached";
-                    },
-                    { enableHighAccuracy: true, timeout: 5000 }
-                );
+            if (!f || f.error) {
+                readout.innerText = 'No position';
+                detail.innerText = 'No fix: ' + ((f && f.error) || 'unknown error');
+                badge.innerText = 'No fix';
+                badge.style.color = '#fca5a5';
+                return;
             }
+            readout.innerText = `Lat: ${f.lat.toFixed(6)}° | Lon: ${f.lon.toFixed(6)}°`;
+            const acc = f.accuracy_m == null ? 'accuracy unknown' : `Accuracy: ±${Number(f.accuracy_m).toFixed(1)} m`;
+            const alt = f.altitude_m == null ? '' : ` | Alt: ${Number(f.altitude_m).toFixed(0)} m`;
+            const age = f.time_ms ? Math.max(0, Math.round((Date.now() - f.time_ms) / 1000)) : null;
+            const when = f.time_ms ? ` | ${new Date(f.time_ms).toLocaleTimeString()}` : '';
+            detail.innerText = `${acc}${alt} | ${f.provider}${when}` + (age != null && age > 120 ? ` | last known fix, ${Math.round(age / 60)} min old` : '');
+            badge.innerText = age != null && age > 120 ? 'Old fix' : 'Live fix';
+            badge.style.color = 'var(--emerald)';
+        }
+        window.n9OnLocation = showFix;
+        function acquireGPS() {
+            playHaptic();
+            const badge = document.getElementById('gpsBadge');
+            badge.innerText = 'Acquiring...';
+            badge.style.color = 'var(--gold)';
+            if (window.NautiK9Android && window.NautiK9Android.requestLocation) {
+                window.NautiK9Android.requestLocation();
+                return;
+            }
+            if (!('geolocation' in navigator)) { showFix({ error: 'this browser has no geolocation' }); return; }
+            navigator.geolocation.getCurrentPosition(
+                pos => showFix({ lat: pos.coords.latitude, lon: pos.coords.longitude, accuracy_m: pos.coords.accuracy, altitude_m: pos.coords.altitude, provider: 'browser', time_ms: pos.timestamp }),
+                err => showFix({ error: err.message || ('code ' + err.code) + (window.isSecureContext ? '' : ' (the page is not on https or localhost, so the browser refuses location)') }),
+                { enableHighAccuracy: true, timeout: 15000 }
+            );
         }
 
+        function showBattery(level, charging, extra) {
+            document.getElementById('battReadout').innerText = level == null ? 'unknown' : level + '%';
+            document.getElementById('chargeReadout').innerText = (charging ? 'Charging ⚡' : 'Discharging') + (extra || '');
+        }
         function initSensors() {
+            const r = bridgeCall('battery');
+            if (r) {
+                if (r.error) { document.getElementById('battReadout').innerText = 'unknown'; document.getElementById('chargeReadout').innerText = r.error; }
+                else showBattery(r.level, r.charging, r.temp_c ? ` • ${r.temp_c} °C` : '');
+                return;
+            }
             if ('getBattery' in navigator) {
-                navigator.getBattery().then(batt => {
-                    document.getElementById('battReadout').innerText = Math.round(batt.level * 100) + '%';
-                    document.getElementById('chargeReadout').innerText = batt.charging ? 'Charging ⚡' : 'Discharging';
-                });
+                navigator.getBattery().then(batt => showBattery(Math.round(batt.level * 100), batt.charging, ''));
+            } else {
+                document.getElementById('battReadout').innerText = 'unknown';
+                document.getElementById('chargeReadout').innerText = 'this browser does not report the battery';
             }
         }
 
         let torchTrack = null;
         async function toggleTorch() {
             playHaptic();
+            const b = window.NautiK9Android;
+            if (b && b.torch) {
+                const r = bridgeCall('torch', !b.torchState());
+                controlStatus(r.error ? 'Torch failed: ' + r.error : (r.on ? 'Torch on.' : 'Torch off.'), !!r.error);
+                return;
+            }
             try {
                 if (torchTrack) {
                     torchTrack.stop();
                     torchTrack = null;
+                    controlStatus('Torch off.');
                     return;
                 }
                 const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
                 torchTrack = stream.getVideoTracks()[0];
                 await torchTrack.applyConstraints({ advanced: [{ torch: true }] });
+                controlStatus('Torch on (browser camera).');
             } catch (e) {
-                playHaptic();
+                if (torchTrack) { torchTrack.stop(); torchTrack = null; }
+                controlStatus('Torch failed: ' + (e.message || e) + (window.isSecureContext ? '' : ' (camera needs https or localhost)'), true);
             }
         }
+        (function () {
+            const hb = document.getElementById('hostBadge');
+            if (hb) hb.innerText = window.NautiK9Android ? 'PHONE APP' : 'WEB';
+        })();
 
         // SMS Dispatcher & Work Mode Functions
         async function loadSmsInbox(sync = false) {
+            if (sync) await pushAppInbox();
             try {
                 const res = await fetch('/api/sms/inbox' + (sync ? '?sync=true' : ''));
                 const data = await res.json();
@@ -1683,7 +1849,9 @@
                     body: JSON.stringify({ id, action })
                 });
                 const data = await res.json();
-                if (data.dispatch_result) {
+                if (data.composer) {
+                    if (!(await openComposer(id, data.composer))) alert('Could not open the SMS composer');
+                } else if (data.dispatch_result) {
                     alert(data.dispatch_result);
                 }
                 loadSmsInbox();
@@ -1748,7 +1916,11 @@
                         body: JSON.stringify({ id: data.message.id, action: 'approve' })
                     });
                     const actData = await actRes.json();
-                    statusEl.innerText = actData.dispatch_result || "Done";
+                    if (actData.composer) {
+                        statusEl.innerText = (await openComposer(data.message.id, actData.composer)) ? 'Composer opened; press send on the phone' : 'Could not open the SMS composer';
+                    } else {
+                        statusEl.innerText = actData.dispatch_result || "Done";
+                    }
                     statusEl.style.color = "var(--emerald)";
                 }
                 loadSmsInbox(false);
@@ -1825,7 +1997,43 @@
             } catch (e) {}
         }
 
-        // Chat with the model endpoints
+        // Chat with the agent (sessions, tools). Offline toggle = plain answer from an offline endpoint.
+        let chatSession = (function () { try { return localStorage.getItem('nautik9_chat_session') || null; } catch (e) { return null; } })();
+        function setChatSession(id) { chatSession = id; try { id ? localStorage.setItem('nautik9_chat_session', id) : localStorage.removeItem('nautik9_chat_session'); } catch (e) {} }
+        function newChat() {
+            setChatSession(null);
+            const stream = document.getElementById('chatStream');
+            stream.innerHTML = '<div class="msg-bubble msg-mack">🐾 New chat.</div>';
+        }
+        // One agent reply with 👍 / 👎 / Retry (Retry answers the last user message again).
+        function renderAgentReply(el, r) {
+            const tools = (r.tool_calls || []).map(t => `${t.ok ? '✓' : '✗'} ${t.name}`).join('  ');
+            el.innerText = (r.reply || ('⚠ ' + r.stopped)) +
+                (tools ? `\n\n🔧 ${tools}` : '') + `\n[${r.model} via ${r.provider} • ${r.steps} step(s)]`;
+            document.querySelectorAll('.reply-actions').forEach(n => n.remove()); // Retry only on the latest reply
+            const bar = document.createElement('div');
+            bar.className = 'reply-actions';
+            bar.style.cssText = 'display:flex;gap:6px;margin-top:6px;';
+            const mk = (label, fn) => { const b = document.createElement('button'); b.className = 'btn-primary'; b.style.cssText = 'padding:2px 8px;font-size:0.75rem'; b.innerText = label; b.onclick = fn; return b; };
+            const rate = async (v, btn) => {
+                const res = await fetch('/api/agent/sessions/' + r.session_id);
+                const msgs = await res.json();
+                const last = Array.isArray(msgs) ? [...msgs].reverse().find(m => m.message.role === 'assistant') : null;
+                if (!last) return;
+                const ok = await fetch('/api/agent/sessions/' + r.session_id + '/rate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ idx: last.idx, rating: v }) });
+                if (ok.ok) btn.style.opacity = '1', btn.innerText += ' ✓';
+            };
+            const up = mk('👍', () => rate(1, up)), down = mk('👎', () => rate(-1, down));
+            const retry = mk('↻ Retry', async () => {
+                el.innerText = 'Mack is trying again...';
+                const res = await fetch('/api/agent/sessions/' + r.session_id + '/retry', { method: 'POST' });
+                const data = await res.json();
+                if (!res.ok || data.ok === false) { el.innerText = 'Retry failed (' + res.status + '): ' + (data.error || res.statusText); el.style.borderColor = 'var(--rose)'; }
+                else renderAgentReply(el, data.result);
+            });
+            bar.append(up, down, retry);
+            el.appendChild(bar);
+        }
         async function doChat() {
             const input = document.getElementById('chatInput');
             const p = input.value.trim();
@@ -1841,24 +2049,32 @@
 
             const mackMsg = document.createElement('div');
             mackMsg.className = 'msg-bubble msg-mack';
-            mackMsg.innerText = "Mack is thinking...";
+            mackMsg.innerText = "Mack is working...";
             stream.appendChild(mackMsg);
             stream.scrollTop = stream.scrollHeight;
 
             const offline = document.getElementById('offlineToggle').checked;
             try {
-                const res = await fetch('/api/chat', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ prompt: p, offline: offline })
-                });
-                const data = await res.json();
-                if (!res.ok || data.ok === false) {
-                    mackMsg.innerText = 'No model answered (' + res.status + '): ' + (data.error || res.statusText) +
-                        (data.attempts && data.attempts.length ? '\n' + data.attempts.join('\n') : '');
-                    mackMsg.style.borderColor = 'var(--rose)';
+                if (offline) {
+                    const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: p, offline: true }) });
+                    const data = await res.json();
+                    if (!res.ok || data.ok === false) {
+                        mackMsg.innerText = 'No offline model answered (' + res.status + '): ' + (data.error || res.statusText) + (data.attempts && data.attempts.length ? '\n' + data.attempts.join('\n') : '');
+                        mackMsg.style.borderColor = 'var(--rose)';
+                    } else {
+                        mackMsg.innerText = data.response + `\n\n[${data.model_used} • ${data.duration_ms}ms]`;
+                    }
                 } else {
-                    mackMsg.innerText = data.response + `\n\n[${data.model_used} • ${data.duration_ms}ms]`;
+                    const res = await fetch('/api/agent/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: p, session_id: chatSession }) });
+                    const data = await res.json();
+                    if (!res.ok || data.ok === false) {
+                        mackMsg.innerText = 'No model answered (' + res.status + '): ' + (data.error || res.statusText) + (data.attempts && data.attempts.length ? '\n' + data.attempts.join('\n') : '');
+                        mackMsg.style.borderColor = 'var(--rose)';
+                    } else {
+                        const r = data.result;
+                        setChatSession(r.session_id);
+                        renderAgentReply(mackMsg, r);
+                    }
                 }
             } catch (e) {
                 mackMsg.innerText = 'Request failed: ' + e;
@@ -1866,12 +2082,226 @@
             stream.scrollTop = stream.scrollHeight;
         }
 
+        // ---- Automations tab: playbooks, flows, schedules ----
+        function auOut(label, status, data) {
+            document.getElementById('auOut').textContent = label + ' -> HTTP ' + status + '\n' + (typeof data === 'string' ? data : JSON.stringify(data, null, 2));
+        }
+        async function auJson(method, url, body) {
+            const init = { method };
+            if (body !== undefined) { init.headers = { 'Content-Type': 'application/json' }; init.body = JSON.stringify(body); }
+            const res = await fetch(url, init);
+            let data = null;
+            try { data = await res.json(); } catch (e) { data = null; }
+            return { status: res.status, ok: res.ok, data };
+        }
+        function auBadge(text, good) { return '<span class="au-badge ' + (good === true ? 'au-ok' : good === false ? 'au-bad' : '') + '">' + esc(text) + '</span>'; }
+        function auLast(l) { return l ? 'last run ' + esc(l.at) + ' (' + esc(l.trigger) + ') ' + (l.ok ? 'ok' : 'FAILED') : 'never run'; }
+        function auBtn(kind, act, name, label) { return '<button data-kind="' + kind + '" data-act="' + act + '" data-name="' + esc(name) + '">' + label + '</button>'; }
+        function auTrigger(t) {
+            if (!t) return '';
+            if (t.type === 'schedule') return 'schedule: ' + t.when;
+            if (t.type === 'note_changed') return 'note changed: ' + t.path;
+            if (t.type === 'sms_received') return 'text received' + (t.from ? ' from ' + t.from : '') + (t.contains ? ' containing "' + t.contains + '"' : '');
+            if (t.type === 'webhook') return 'webhook';
+            return t.type;
+        }
+        async function loadAuto() {
+            const [pb, fl, sc] = await Promise.all([auJson('GET', '/api/agent/playbooks'), auJson('GET', '/api/agent/flows'), auJson('GET', '/api/agent/schedules')]);
+            const pbBox = document.getElementById('auPlaybooks');
+            if (!pb.ok) pbBox.textContent = 'Playbooks unavailable (HTTP ' + pb.status + '): ' + ((pb.data && pb.data.error) || '');
+            else if (!pb.data.length) pbBox.textContent = 'No playbooks. Write a note Jade/Playbooks/<name>.json.';
+            else pbBox.innerHTML = pb.data.map(p => '<div class="au-row"><span class="au-name">' + esc(p.name) + '</span>' +
+                auBadge(p.valid ? 'valid' : 'invalid', p.valid) + auBadge(p.approved ? 'approved' : 'not approved', p.approved) +
+                '<div class="au-sub">' + esc(p.description || '') + (p.tasks != null ? ' (' + esc(p.tasks) + ' tasks)' : '') + (p.error ? ' ' + esc(p.error) : '') + ' &middot; ' + auLast(p.last_run) + '</div>' +
+                '<div class="au-btns">' + auBtn('playbooks', 'show', p.name, 'Show') + auBtn('playbooks', 'check', p.name, 'Check') + auBtn('playbooks', 'run', p.name, 'Run now') + auBtn('playbooks', 'approve', p.name, 'Approve') + '</div></div>').join('');
+            const flBox = document.getElementById('auFlows');
+            if (!fl.ok) flBox.textContent = 'Flows unavailable (HTTP ' + fl.status + '): ' + ((fl.data && fl.data.error) || '');
+            else if (!fl.data.length) flBox.textContent = 'No flows. Write a note Jade/Flows/<name>.json.';
+            else flBox.innerHTML = fl.data.map(f => '<div class="au-row"><span class="au-name">' + esc(f.name) + '</span>' +
+                auBadge(f.valid ? 'valid' : 'invalid', f.valid) + auBadge(f.approved ? 'approved' : 'not approved', f.approved) + (f.enabled === false ? auBadge('disabled', false) : '') +
+                (f.playbook_approved === false ? auBadge('its playbook is not approved', false) : '') +
+                '<div class="au-sub">' + esc(auTrigger(f.trigger)) + ' &rarr; ' + esc(f.action || '') + (f.trigger && f.trigger.type === 'webhook' ? ' &middot; POST /api/agent/flows/' + esc(f.name) + '/hook' : '') + ' &middot; ' + auLast(f.last_run) + '</div>' +
+                ((f.problems && f.problems.length) ? '<div class="au-sub" style="color:var(--rose)">' + f.problems.map(esc).join('<br>') + '</div>' : '') +
+                '<div class="au-btns">' + auBtn('flows', 'show', f.name, 'Show') + auBtn('flows', 'check', f.name, 'Check') + auBtn('flows', 'run', f.name, 'Run now') + auBtn('flows', 'approve', f.name, 'Approve') + '</div></div>').join('');
+            const scBox = document.getElementById('auSchedules');
+            if (!sc.ok) scBox.textContent = 'Schedules unavailable (HTTP ' + sc.status + '): ' + ((sc.data && sc.data.error) || '');
+            else if (!sc.data.length) scBox.textContent = 'No schedules.';
+            else scBox.innerHTML = sc.data.map(s => '<div class="au-row"><span class="au-name">' + esc(s.spec) + '</span>' + auBadge(s.kind === 'playbook' ? 'playbook ' + s.payload : 'prompt') + auBadge(s.enabled ? 'on' : 'off', s.enabled) +
+                '<div class="au-sub">' + (s.kind === 'prompt' ? esc(s.payload) + ' &middot; ' : '') + 'next ' + esc(s.next_run || '-') + ' &middot; last ' + esc(s.last_run || 'never') + (s.last_result ? ': ' + esc(s.last_result) : '') + '</div>' +
+                '<div class="au-btns">' + auBtn('schedules', 'run', s.id, 'Run now') + auBtn('schedules', 'delete', s.id, 'Delete') + '</div></div>').join('');
+        }
+        async function auAct(kind, act, name) {
+            const base = '/api/agent/' + kind + '/' + encodeURIComponent(name);
+            if (kind === 'schedules') {
+                if (act === 'delete') {
+                    if (!confirm('Delete schedule ' + name + '?')) return;
+                    const r = await auJson('DELETE', base);
+                    auOut('delete ' + name, r.status, r.data);
+                } else {
+                    const r = await auJson('POST', base + '/run', {});
+                    auOut('run schedule ' + name, r.status, r.data);
+                }
+                return loadAuto();
+            }
+            if (act === 'show') {
+                const r = await auJson('GET', base);
+                auOut('show ' + name, r.status, r.ok ? ('approved: ' + r.data.approved + '\nsha256: ' + r.data.sha256 + '\n\n' + r.data.json) : r.data);
+            } else if (act === 'check') {
+                const r = await auJson('POST', base + '/check');
+                auOut('check ' + name, r.status, r.data);
+            } else if (act === 'run') {
+                const r = await auJson('POST', base + '/run', {});
+                auOut('run ' + name, r.status, r.data);
+                await loadAuto();
+            } else if (act === 'approve') {
+                // Approval is a decision about this exact text: show it before asking.
+                const s = await auJson('GET', base);
+                if (!s.ok) return auOut('approve ' + name, s.status, s.data);
+                const text = s.data.json.length > 1500 ? s.data.json.slice(0, 1500) + '\n... (cut)' : s.data.json;
+                if (!confirm('Approve ' + kind.slice(0, -1) + ' "' + name + '"? It may then run on its own. Exactly this text:\n\n' + text)) return;
+                const r = await auJson('POST', base + '/approve');
+                auOut('approve ' + name, r.status, r.data);
+                await loadAuto();
+            }
+        }
+        document.addEventListener('click', ev => {
+            const b = ev.target.closest && ev.target.closest('button[data-act]');
+            if (b && b.dataset.kind) auAct(b.dataset.kind, b.dataset.act, b.dataset.name);
+        });
+        async function auAddSchedule() {
+            const spec = document.getElementById('auSpec').value.trim();
+            const kind = document.getElementById('auKind').value;
+            const text = document.getElementById('auText').value.trim();
+            const body = kind === 'playbook' ? { spec, playbook: text } : { spec, prompt: text };
+            const r = await auJson('POST', '/api/agent/schedules', body);
+            auOut('add schedule', r.status, r.data);
+            if (r.ok) { document.getElementById('auText').value = ''; loadAuto(); }
+        }
+
         // Auto initialization
         initSensors();
         loadDeviceAndProviders();
         loadNotes();
-        loadSmsInbox();
+        loadSmsInbox(!!AppBridge);
         loadFleetTelemetry();
+        renderOfflineModel();
+    </script>
+    <script src="/static/notes-plus.js"></script>
+    <script>
+        // ---- Voice (speak a reply), avatar talking state, mini apps ----
+        // Server voice first (POST /api/agent/tts); if none is configured or it fails, the
+        // browser's own speechSynthesis, and the note under the avatar says which one spoke.
+        let n9Audio = null;
+        function n9VoiceNote(t) { const n = document.getElementById('n9VoiceNote'); if (n) n.innerText = t; }
+        function n9Talking(on) {
+            const b = document.getElementById('avatarBezel');
+            if (b) b.classList.toggle('talking', !!on);
+        }
+        function n9MoodOf(text, failed) {
+            if (failed || /\b(sorry|cannot|can't|couldn't|unable|error|failed|no model|not available)\b/i.test(text || '')) return 'concerned';
+            if (/!|\b(found|done|great|success|yes)\b/i.test(text || '')) return 'excited';
+            return 'calm';
+        }
+        function n9SetMood(text, failed) {
+            const b = document.getElementById('avatarBezel');
+            if (!b) return;
+            const m = n9MoodOf(text, failed);
+            b.classList.remove('mood-excited', 'mood-concerned', 'mood-calm');
+            b.classList.add('mood-' + m);
+            if (!document.getElementById('n9VoiceNote')) {
+                const n = document.createElement('div'); n.id = 'n9VoiceNote';
+                const meta = document.querySelector('.cockpit-meta'); if (meta) meta.appendChild(n);
+            }
+            n9VoiceNote('Mack feels ' + m + ' about that reply');
+        }
+        function n9StopSpeaking() {
+            if (n9Audio) { try { n9Audio.pause(); } catch (e) {} n9Audio = null; }
+            try { window.speechSynthesis && window.speechSynthesis.cancel(); } catch (e) {}
+            n9Talking(false);
+        }
+        function n9BrowserSpeak(text, why) {
+            if (!('speechSynthesis' in window)) { n9VoiceNote('No voice available: ' + why + '; this browser has no speechSynthesis'); return; }
+            const u = new SpeechSynthesisUtterance(text);
+            u.onstart = () => n9Talking(true);
+            u.onend = u.onerror = () => n9Talking(false);
+            n9VoiceNote('Browser voice (speechSynthesis), not the server voice: ' + why);
+            window.speechSynthesis.speak(u);
+        }
+        async function n9Speak(text) {
+            n9StopSpeaking();
+            text = (text || '').trim().slice(0, 4000);
+            if (!text) return;
+            let why = '';
+            try {
+                const res = await fetch('/api/agent/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+                if (res.ok) {
+                    const url = URL.createObjectURL(await res.blob());
+                    n9Audio = new Audio(url);
+                    n9Audio.onplay = () => n9Talking(true);
+                    n9Audio.onended = n9Audio.onerror = () => { n9Talking(false); URL.revokeObjectURL(url); };
+                    n9VoiceNote('Server voice');
+                    await n9Audio.play();
+                    return;
+                }
+                let j = {}; try { j = await res.json(); } catch (e) {}
+                why = j.error || ('HTTP ' + res.status);
+            } catch (e) { why = String(e); }
+            n9BrowserSpeak(text, why);
+        }
+        // Add a Speak button and set the mood on every agent reply (Retry re-renders through this too).
+        (function () {
+            const orig = renderAgentReply;
+            renderAgentReply = function (el, r) {
+                orig(el, r);
+                const bar = el.querySelector('.reply-actions');
+                const said = r.reply || '';
+                n9SetMood(said || r.stopped || '', !r.reply);
+                if (bar && said) {
+                    const b = document.createElement('button');
+                    b.className = 'btn-primary'; b.style.cssText = 'padding:2px 8px;font-size:0.75rem'; b.innerText = '🔊 Speak';
+                    b.onclick = () => n9Speak(said);
+                    bar.appendChild(b);
+                }
+            };
+        })();
+
+        async function n9LoadApps() {
+            const box = document.getElementById('n9AppList');
+            try {
+                const res = await fetch('/api/webxdc/apps');
+                const apps = await res.json();
+                if (!res.ok) { box.innerText = 'Mini apps unavailable: ' + (apps.error || res.status); return; }
+                box.innerHTML = apps.length ? '' : 'No mini apps yet. Add an .xdc file.';
+                apps.forEach(a => {
+                    const row = document.createElement('div'); row.className = 'n9-app-row';
+                    row.innerHTML = '<span>' + esc(a.name) + ' <small>(' + esc(a.files) + ' files, ' + esc(Math.round(a.bytes / 1024)) + ' KB)</small></span>';
+                    const open = document.createElement('button'); open.className = 'btn-primary'; open.style.cssText = 'padding:2px 8px;font-size:0.75rem'; open.innerText = 'Open';
+                    open.onclick = () => n9OpenApp(a.id);
+                    const del = document.createElement('button'); del.className = 'btn-primary'; del.style.cssText = 'padding:2px 8px;font-size:0.75rem'; del.innerText = 'Delete';
+                    del.onclick = async () => { if (confirm('Delete ' + a.name + ' and its updates?')) { await fetch('/api/webxdc/apps/' + a.id, { method: 'DELETE' }); document.getElementById('n9AppFrame').style.display = 'none'; n9LoadApps(); } };
+                    row.append(open, del); box.appendChild(row);
+                });
+            } catch (e) { box.innerText = 'Mini apps unavailable: ' + e; }
+        }
+        function n9OpenApp(id) {
+            const f = document.getElementById('n9AppFrame');
+            f.src = '/api/webxdc/apps/' + encodeURIComponent(id) + '/host?token=' + encodeURIComponent(getToken());
+            f.style.display = 'block';
+        }
+        async function n9UploadXdc(input) {
+            const file = input.files && input.files[0];
+            if (!file) return;
+            const box = document.getElementById('n9AppList');
+            box.innerText = 'Uploading ' + file.name + '...';
+            try {
+                const res = await fetch('/api/webxdc/apps', { method: 'POST', headers: { 'X-Filename': file.name }, body: file });
+                const j = await res.json().catch(() => ({}));
+                if (!res.ok) { box.innerText = 'Not installed: ' + (j.error || res.status); input.value = ''; return; }
+            } catch (e) { box.innerText = 'Upload failed: ' + e; input.value = ''; return; }
+            input.value = '';
+            n9LoadApps();
+        }
+        n9LoadApps();
     </script>
 </body>
 </html>
