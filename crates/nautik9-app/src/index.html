@@ -1891,6 +1891,35 @@
             const stream = document.getElementById('chatStream');
             stream.innerHTML = '<div class="msg-bubble msg-mack">🐾 New chat.</div>';
         }
+        // One agent reply with 👍 / 👎 / Retry (Retry answers the last user message again).
+        function renderAgentReply(el, r) {
+            const tools = (r.tool_calls || []).map(t => `${t.ok ? '✓' : '✗'} ${t.name}`).join('  ');
+            el.innerText = (r.reply || ('⚠ ' + r.stopped)) +
+                (tools ? `\n\n🔧 ${tools}` : '') + `\n[${r.model} via ${r.provider} • ${r.steps} step(s)]`;
+            document.querySelectorAll('.reply-actions').forEach(n => n.remove()); // Retry only on the latest reply
+            const bar = document.createElement('div');
+            bar.className = 'reply-actions';
+            bar.style.cssText = 'display:flex;gap:6px;margin-top:6px;';
+            const mk = (label, fn) => { const b = document.createElement('button'); b.className = 'btn-primary'; b.style.cssText = 'padding:2px 8px;font-size:0.75rem'; b.innerText = label; b.onclick = fn; return b; };
+            const rate = async (v, btn) => {
+                const res = await fetch('/api/agent/sessions/' + r.session_id);
+                const msgs = await res.json();
+                const last = Array.isArray(msgs) ? [...msgs].reverse().find(m => m.message.role === 'assistant') : null;
+                if (!last) return;
+                const ok = await fetch('/api/agent/sessions/' + r.session_id + '/rate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ idx: last.idx, rating: v }) });
+                if (ok.ok) btn.style.opacity = '1', btn.innerText += ' ✓';
+            };
+            const up = mk('👍', () => rate(1, up)), down = mk('👎', () => rate(-1, down));
+            const retry = mk('↻ Retry', async () => {
+                el.innerText = 'Mack is trying again...';
+                const res = await fetch('/api/agent/sessions/' + r.session_id + '/retry', { method: 'POST' });
+                const data = await res.json();
+                if (!res.ok || data.ok === false) { el.innerText = 'Retry failed (' + res.status + '): ' + (data.error || res.statusText); el.style.borderColor = 'var(--rose)'; }
+                else renderAgentReply(el, data.result);
+            });
+            bar.append(up, down, retry);
+            el.appendChild(bar);
+        }
         async function doChat() {
             const input = document.getElementById('chatInput');
             const p = input.value.trim();
@@ -1930,9 +1959,7 @@
                     } else {
                         const r = data.result;
                         setChatSession(r.session_id);
-                        const tools = (r.tool_calls || []).map(t => `${t.ok ? '✓' : '✗'} ${t.name}`).join('  ');
-                        mackMsg.innerText = (r.reply || ('⚠ ' + r.stopped)) +
-                            (tools ? `\n\n🔧 ${tools}` : '') + `\n[${r.model} via ${r.provider} • ${r.steps} step(s)]`;
+                        renderAgentReply(mackMsg, r);
                     }
                 }
             } catch (e) {
