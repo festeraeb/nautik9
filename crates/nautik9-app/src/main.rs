@@ -21,6 +21,9 @@ mod device_sms;
 mod notes_api;
 mod static_assets;
 mod tls;
+mod bridges_glue;
+mod tts;
+mod webxdc_api;
 
 #[derive(Parser, Debug)]
 #[command(name = "nautik9", version = "0.1.0", about = "NautiK9 Pure-Rust Survey & Organization Engine")]
@@ -369,6 +372,9 @@ fn build_router(state: AppState, token: String) -> axum::Router {
         .route("/api/agent/flows/{name}/run", post(flow_api::flow_run))
         .route("/api/agent/flows/{name}/approve", post(flow_api::flow_approve))
         .route("/api/agent/flows/{name}/hook", post(flow_api::flow_hook))
+        // Webxdc mini apps and text to speech (own modules)
+        .merge(webxdc_api::routes())
+        .merge(tts::routes())
         .layer(axum::middleware::from_fn_with_state(
             std::sync::Arc::new(token),
             auth::require_token,
@@ -533,7 +539,13 @@ async fn serve_mobile_web(
         nautik9_agent::flow::FlowRunner::new(a.clone()).spawn();
         println!("Agent: flows running (schedule and note_changed triggers checked every 30 s; Jade/Flows/<name>.json, only approved flows fire)");
     }
-    let app = build_router(state, token.clone());
+    for n in match &state.agent {
+        Ok(a) => bridges_glue::spawn(&opts.config_dir, a.clone(), state.lemonade.clone(), state.work_config.clone(), state.sms_messages.clone()),
+        Err(_) => vec![],
+    } {
+        println!("Bridges: {n}");
+    }
+    let app = build_router(state, token.clone()).layer(axum::Extension(webxdc_api::Runtime { config_dir: opts.config_dir.clone(), secret: token.clone() }));
 
     let addr = format!("{}:{}", opts.bind, opts.port);
     let tls_files = match &opts.tls {
