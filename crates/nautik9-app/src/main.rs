@@ -14,6 +14,7 @@ use nautik9_lemonade::{LemonadeConfig, LemonadeModule};
 use nautik9_wayfinder::{generate_fast_embedding, WayfinderModule, WayfinderVault};
 
 mod agent_api;
+mod agent_ext;
 mod auth;
 mod device_sms;
 
@@ -314,7 +315,11 @@ fn build_router(state: AppState, token: String) -> axum::Router {
         .route("/api/notes/{id}", axum::routing::delete(handle_delete_note))
         .route("/api/notes/{id}/backlinks", get(handle_backlinks))
         .route("/api/tags", get(handle_tags))
-        .route("/api/tot", post(handle_tot))
+        .route("/api/tot", post(agent_ext::tot))
+        .route("/api/agent/templates", get(agent_ext::templates))
+        .route("/api/agent/templates/{name}/create", post(agent_ext::template_create))
+        .route("/api/agent/scripts", get(agent_ext::scripts))
+        .route("/api/agent/scripts/run", post(agent_ext::script_run))
         .route("/api/fleet/status", get(handle_fleet_status))
         .route("/api/avatar/action", post(handle_avatar_action))
         .route("/api/sms/inbox", get(handle_sms_inbox))
@@ -1032,20 +1037,6 @@ async fn handle_delete_note(
     axum::Json(serde_json::json!({ "success": ok, "id": id }))
 }
 
-/// Tree-of-thought reasoning is not implemented. The old endpoint returned a fixed
-/// template with invented verifier results, so it now says so instead.
-async fn handle_tot() -> axum::response::Response {
-    use axum::response::IntoResponse;
-    (
-        axum::http::StatusCode::NOT_IMPLEMENTED,
-        axum::Json(serde_json::json!({
-            "ok": false,
-            "error": "Tree-of-thought reasoning is not implemented yet (planned). Use Chat for a model answer."
-        })),
-    )
-        .into_response()
-}
-
 async fn handle_avatar_action(
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::Json(payload): axum::Json<serde_json::Value>,
@@ -1371,13 +1362,55 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tot_is_not_faked() {
+    async fn tot_without_an_endpoint_is_an_honest_error() {
         let d = tempfile::tempdir().unwrap();
         let a = app(d.path());
         let (s, v) = call(&a, "POST", "/api/tot", Some(TOKEN), Some(serde_json::json!({"problem":"x"}))).await;
-        assert_eq!(s, StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(s, StatusCode::BAD_GATEWAY, "{v}");
         assert_eq!(v["ok"], false);
-        assert!(v.get("nodes").is_none());
+        assert!(v.get("nodes").is_none() && v["attempts"].as_array().is_some_and(|a| !a.is_empty()), "{v}");
+        let (s, _) = call(&a, "POST", "/api/tot", Some(TOKEN), Some(serde_json::json!({"problem":"  "}))).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+        let (s, _) = call(&a, "POST", "/api/tot", None, Some(serde_json::json!({"problem":"x"}))).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn templates_and_scripts_routes() {
+        let d = tempfile::tempdir().unwrap();
+        let a = app(d.path());
+        let mk = |title: &str, content: &str| serde_json::json!({"title": title, "content": content, "tags": []});
+        call(&a, "POST", "/api/notes", Some(TOKEN), Some(mk("Templates/Log.md", "# <% tp.file.title %>\nAsked: <% tp.system.prompt(\"Who?\") %>\n<% tp.file.cursor() %>"))).await;
+        call(&a, "POST", "/api/notes", Some(TOKEN), Some(mk("Scripts/sum.md", "Adds.\n```js\nreturn args.a + args.b + (await jade.list('Templates/')).length;\n```"))).await;
+        let (s, v) = call(&a, "GET", "/api/agent/templates", Some(TOKEN), None).await;
+        assert_eq!((s, v["templates"][0].as_str()), (StatusCode::OK, Some("Templates/Log.md")), "{v}");
+        let (s, v) = call(&a, "POST", "/api/agent/templates/Log/create", Some(TOKEN), Some(serde_json::json!({"title": "Visits/Mon"}))).await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+        assert!(v["error"].as_str().unwrap().contains("Who?"));
+        let (s, v) = call(&a, "POST", "/api/agent/templates/Log/create", Some(TOKEN), Some(serde_json::json!({"title": "Visits/Mon", "values": {"Who?": "Sam"}}))).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["text"], "# Mon\nAsked: Sam\n");
+        let (s, _) = call(&a, "POST", "/api/agent/templates/Log/create", Some(TOKEN), Some(serde_json::json!({"title": "Visits/Mon", "values": {"Who?": "Sam"}}))).await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "never overwrites");
+        let (s, v) = call(&a, "GET", "/api/agent/scripts", Some(TOKEN), None).await;
+        assert_eq!((s, v["scripts"][0].as_str()), (StatusCode::OK, Some("Scripts/sum.md")), "{v}");
+        let (s, v) = call(&a, "POST", "/api/agent/scripts/run", Some(TOKEN), Some(serde_json::json!({"path": "Scripts/sum.md", "args": {"a": 2, "b": 3}}))).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert!(v["result"].as_str().unwrap().contains("returned: 6"), "{v}");
+        let (s, _) = call(&a, "POST", "/api/agent/scripts/run", Some(TOKEN), Some(serde_json::json!({"path": "Scripts/none.md"}))).await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn sandbox_tool_is_off_unless_configured() {
+        let d = tempfile::tempdir().unwrap();
+        let on = |dir: &std::path::Path| agent_api::build_agent(dir, &dir.join("vault.db"), std::sync::Arc::new(dead_lemonade()), Default::default()).unwrap();
+        assert!(on(d.path()).tools.get("sandbox").is_none());
+        let d2 = tempfile::tempdir().unwrap();
+        std::fs::write(d2.path().join("agent.json"), r#"{"sandbox": {"enabled": true}}"#).unwrap();
+        let a = on(d2.path());
+        assert!(a.tools.allowed("sandbox", true, false).is_some());
+        assert!(a.tools.allowed("sandbox", false, false).is_none(), "non-owner gets no sandbox");
     }
 
     #[test]

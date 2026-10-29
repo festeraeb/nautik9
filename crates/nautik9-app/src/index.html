@@ -1413,12 +1413,12 @@
 
                     el.innerHTML = `
                         <div class="tot-node-header">
-                            <span class="tot-node-title">${node.label}</span>
+                            <span class="tot-node-title">${esc(node.label)}</span>
                             <span class="tot-score-pill ${pillClass}">Score: ${scorePct}%</span>
                         </div>
-                        <div class="tot-desc">${node.hypothesis}</div>
+                        <div class="tot-desc">${esc(node.hypothesis)}</div>
                         <div class="tot-checks">
-                            ${node.verifier_checks.map(c => `<div>• ${c}</div>`).join('')}
+                            ${node.verifier_checks.map(c => `<div>• ${esc(c)}</div>`).join('')}
                         </div>
                     `;
                     container.appendChild(el);
@@ -1429,7 +1429,8 @@
                     planEl.className = 'tot-plan-box';
                     planEl.innerHTML = `
                         <div class="tot-plan-title">🏆 Winning Plan (Branch ${data.winning_branch_id}):</div>
-                        ${data.winning_plan.map(step => `<div class="tot-plan-step">• ${step}</div>`).join('')}
+                        ${data.winning_plan.map(step => `<div class="tot-plan-step">• ${esc(step)}</div>`).join('')}
+                        ${data.answer ? `<div class="tot-plan-step" style="margin-top:8px"><b>Answer:</b> ${esc(data.answer)}</div><div class="tot-plan-step" style="opacity:.7">Scores are the model grading its own steps (${data.model_calls} model calls).</div>` : ''}
                     `;
                     planContainer.appendChild(planEl);
                 }

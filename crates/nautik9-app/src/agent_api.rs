@@ -40,6 +40,10 @@
 //!   index_path: the search index file (default <config dir>/vectors.db; a cache, safe to delete);
 //!   remote_url + remote_token_file: another NautiK9 server to search through (the phone uses
 //!     https://<your-home-server> with a file holding that server's token);
+//!   sandbox: {enabled, timeout_secs, max_output_bytes, memory_mb, cpu_secs, network, isolation}:
+//!     the opt-in `sandbox` tool (shell/Python/Node code with limits); absent = off, see nautik9_agent::sandbox;
+//!   scripts: {write, tools, max_calls, max_loop, timeout_secs}: limits and powers of note scripts
+//!     (read-only by default), see nautik9_agent::script;
 //!   mcp: [{"name", "url", "token_file"?}] MCP servers whose tools the model gets: on t440 the
 //!     fleet MCP {"name":"fleet","url":"http://127.0.0.1:7800/mcp"}; on the phone the home server's
 //!     proxy {"name":"home","url":"https://<your-home-server>/api/agent/mcp","token_file":"home_token"}.
@@ -152,10 +156,16 @@ pub fn build_agent(
         mcp_local: Arc::new(mcp.1),
         memory: Arc::new(memory),
     };
+    let script_cfg = nautik9_agent::script::ScriptConfig::from_json(&conf["scripts"])?;
+    let sandbox_cfg = nautik9_agent::sandbox::SandboxConfig::from_json(&conf["sandbox"])?;
     // The playbook tool needs the agent's registry and its `ask` turn, so it holds the agent weakly.
     Ok(Arc::new_cyclic(|me| {
         let mut extra = mcp.0;
         extra.push(Arc::new(PlaybookTool { agent: me.clone() }));
+        extra.push(Arc::new(nautik9_agent::script::ScriptTool { agent: me.clone(), cfg: script_cfg.clone() }));
+        if sandbox_cfg.enabled {
+            extra.push(Arc::new(nautik9_agent::sandbox::SandboxTool { cfg: sandbox_cfg.clone() }));
+        }
         let (registry, skipped) = Registry::with_extra(extra);
         if !skipped.is_empty() {
             println!("Agent: tools skipped (name taken by a built-in tool): {}", skipped.join(", "));

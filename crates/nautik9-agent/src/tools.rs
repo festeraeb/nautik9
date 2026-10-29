@@ -96,6 +96,7 @@ impl Registry {
             Arc::new(SkillTool),
             Arc::new(crate::schedule::ScheduleTool),
             Arc::new(crate::memory::EmbeddingsTool),
+            Arc::new(crate::template::TemplateTool),
         ];
         Registry { tools }
     }
