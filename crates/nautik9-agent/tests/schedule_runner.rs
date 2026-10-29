@@ -44,6 +44,7 @@ fn agent(base: &str) -> Arc<Agent> {
         search: Arc::new(vec![]),
         owner: true,
         mcp_local: Arc::new(Default::default()),
+        memory: Arc::new(nautik9_agent::memory::MemoryIndex::in_memory(None).unwrap()),
     };
     Arc::new(Agent::new(Arc::new(llm), ctx, AgentConfig::default()))
 }

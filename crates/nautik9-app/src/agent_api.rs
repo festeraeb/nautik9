@@ -12,6 +12,11 @@
 //!   POST   /api/agent/schedules/{id}/run    run it now -> Schedule (409 while another run is going)
 //!   GET    /api/agent/export?format=openai|sharegpt&rated=up|down|any -> JSONL of stored chats
 //!
+//!   POST   /api/agent/embeddings            {action: search | add | index | remove | compare | status, ...}
+//!                                           -> {result}: the `embeddings` tool's actions (hybrid search)
+//!   POST   /api/agent/journal               {date?: YYYY-MM-DD} -> the journal for that day (default
+//!                                           yesterday); 502 and nothing written when no model answers
+//!
 //!   POST   /api/agent/web_search            {query, k?} -> {result}: this server's web search, for
 //!                                           phones that search through the home server
 //!
@@ -22,6 +27,10 @@
 //!   search: backends in order, each "searx:<url>", "remote" or "duckduckgo"
 //!     (default: "remote" if remote_url is set, then "searx:<searx_url or $NAUTIK9_SEARX_URL>"
 //!     if set, then "duckduckgo");
+//!   memory_k: memory bullets shown when Memory.md is longer (default 8);
+//!   embeddings: {"url", "model", "api_key_env"?}: any OpenAI-compatible /v1/embeddings endpoint.
+//!     Absent = semantic search OFF, every report says "keyword only" (no fake vectors);
+//!   index_path: the search index file (default <config dir>/vectors.db; a cache, safe to delete);
 //!   remote_url + remote_token_file: another NautiK9 server to search through (the phone uses
 //!     https://<your-home-server> with a file holding that server's token);
 //!   mcp: [{"name", "url", "token_file"?}] MCP servers whose tools the model gets: on t440 the
@@ -35,6 +44,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use nautik9_agent::memory::{EmbedConfig, MemoryIndex};
 use nautik9_agent::store::Store;
 use nautik9_agent::tools::{search_once, McpServer, Registry, SearchBackend, Tool, ToolCtx};
 use nautik9_agent::{Agent, AgentConfig};
@@ -110,6 +120,7 @@ pub fn build_agent(
         max_steps: num("max_steps", d.max_steps),
         context_chars: num("context_chars", d.context_chars),
         max_tokens: num("max_tokens", d.max_tokens as usize) as u32,
+        memory_k: num("memory_k", d.memory_k).clamp(1, 30),
         ..d
     };
     let http = reqwest::Client::builder()
@@ -117,6 +128,12 @@ pub fn build_agent(
         .redirect(reqwest::redirect::Policy::limited(5))
         .build()
         .map_err(|e| e.to_string())?;
+    let index_path = match conf["index_path"].as_str() {
+        Some(p) if std::path::Path::new(p).is_absolute() => std::path::PathBuf::from(p),
+        Some(p) => config_dir.join(p),
+        None => config_dir.join("vectors.db"),
+    };
+    let memory = MemoryIndex::open(&index_path, EmbedConfig::from_json(&conf["embeddings"])?).map_err(|e| format!("index {}: {e}", index_path.display()))?;
     let ctx = ToolCtx {
         vault: Arc::new(vault),
         store,
@@ -125,6 +142,7 @@ pub fn build_agent(
         search: Arc::new(search_backends(&conf, config_dir)?),
         owner: true,
         mcp_local: Arc::new(mcp.1),
+        memory: Arc::new(memory),
     };
     let (registry, skipped) = Registry::with_extra(mcp.0);
     if !skipped.is_empty() {
@@ -244,6 +262,32 @@ pub async fn chat(State(st): State<AppState>, Json(p): Json<Value>) -> Response 
         return bad(StatusCode::BAD_REQUEST, "missing `message`");
     };
     turn_response(a.turn(p["session_id"].as_str(), msg, true).await)
+}
+
+/// `POST /api/agent/embeddings`: the same actions as the `embeddings` tool.
+pub async fn embeddings(State(st): State<AppState>, Json(p): Json<Value>) -> Response {
+    let a = match agent_of(&st) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    match nautik9_agent::memory::run_action(&a.ctx, &p).await {
+        Ok(v) => Json(json!({"ok": true, "result": v})).into_response(),
+        Err(e) => bad(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+/// `POST /api/agent/journal {date?}`.
+pub async fn journal(State(st): State<AppState>, body: Option<Json<Value>>) -> Response {
+    let a = match agent_of(&st) {
+        Ok(a) => a.clone(),
+        Err(r) => return r,
+    };
+    let p = body.map(|b| b.0).unwrap_or(Value::Null);
+    match a.journal(p["date"].as_str()).await {
+        Ok(v) => Json(json!({"ok": true, "result": v})).into_response(),
+        Err(e) if e.contains("not YYYY-MM-DD") => bad(StatusCode::BAD_REQUEST, e),
+        Err(e) => bad(StatusCode::BAD_GATEWAY, e),
+    }
 }
 
 pub async fn sessions(State(st): State<AppState>) -> Response {

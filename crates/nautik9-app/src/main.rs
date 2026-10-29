@@ -331,6 +331,8 @@ fn build_router(state: AppState, token: String) -> axum::Router {
         .route("/api/agent/schedules/{id}", axum::routing::delete(agent_api::delete_schedule))
         .route("/api/agent/schedules/{id}/run", post(agent_api::run_schedule))
         .route("/api/agent/export", get(agent_api::export))
+        .route("/api/agent/embeddings", post(agent_api::embeddings))
+        .route("/api/agent/journal", post(agent_api::journal))
         .route("/api/agent/web_search", post(agent_api::web_search))
         .route("/api/agent/mcp", post(agent_api::mcp_proxy))
         .layer(axum::middleware::from_fn_with_state(
@@ -1293,6 +1295,39 @@ mod tests {
         assert_eq!(t["tags"][0]["tag"], "sonar");
         let (_, n) = call(&a, "GET", "/api/notes?tag=sonar", Some(TOKEN), None).await;
         assert_eq!(n["count"], 1);
+    }
+
+    #[tokio::test]
+    async fn embeddings_and_journal_endpoints_are_honest() {
+        let d = tempfile::tempdir().unwrap();
+        let a = app(d.path());
+        let (s, _) = call(&a, "POST", "/api/agent/embeddings", None, Some(serde_json::json!({"action":"status"}))).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+        let (s, _) = call(&a, "POST", "/api/agent/journal", None, Some(serde_json::json!({}))).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+        // No `embeddings` in agent.json: semantic is off and says so; keyword search still works.
+        let (s, v) = call(&a, "POST", "/api/agent/embeddings", Some(TOKEN), Some(serde_json::json!({"action":"status"}))).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["result"]["semantic"], "off: keyword only");
+        let (_, v) = call(&a, "POST", "/api/agent/embeddings", Some(TOKEN), Some(serde_json::json!({"action":"add","collection":"snips","text":"Likes oat milk lattes"}))).await;
+        assert_eq!(v["result"]["added"], 1);
+        let (_, v) = call(&a, "POST", "/api/agent/embeddings", Some(TOKEN), Some(serde_json::json!({"action":"search","query":"lattes"}))).await;
+        assert!(v["result"]["mode_used"].as_str().unwrap().starts_with("keyword only"));
+        assert_eq!(v["result"]["hits"][0]["collection"], "snips");
+        let (s, v) = call(&a, "POST", "/api/agent/embeddings", Some(TOKEN), Some(serde_json::json!({"action":"search","query":"coffee","mode":"semantic"}))).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+        assert!(v["error"].as_str().unwrap().contains("keyword only"));
+        // Journal: a bad date is a 400; with a stored chat and no model it is a 502 and writes nothing.
+        let (s, _) = call(&a, "POST", "/api/agent/journal", Some(TOKEN), Some(serde_json::json!({"date":"yesterday"}))).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+        let (s, _) = call(&a, "POST", "/api/agent/chat", Some(TOKEN), Some(serde_json::json!({"message":"hello journal"}))).await;
+        assert_eq!(s, StatusCode::BAD_GATEWAY);
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let (s, v) = call(&a, "POST", "/api/agent/journal", Some(TOKEN), Some(serde_json::json!({"date": today}))).await;
+        assert_eq!(s, StatusCode::BAD_GATEWAY, "{v}");
+        assert!(v["error"].as_str().unwrap().contains("journal not written"));
+        let (_, notes) = call(&a, "GET", "/api/notes", Some(TOKEN), None).await;
+        assert!(!notes.to_string().contains("Journal"), "nothing written: {notes}");
     }
 
     #[tokio::test]
