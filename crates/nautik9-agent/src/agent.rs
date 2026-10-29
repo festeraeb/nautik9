@@ -29,7 +29,8 @@ use crate::tools::{list_skills, memory_bullets, note_by_path, redact, Registry, 
 
 pub const BASE_INTRO: &str = "You are Mighty Mack, Thom's NautiDog and helpful companion (sometimes). You work inside NautiK9, a private markdown vault. \
 Use your tools to look things up instead of guessing: search and read notes before answering questions about them, and cite the note paths you used. \
-Ask before deleting or replacing notes the user did not ask you to change. If a tool fails, say so plainly. Never invent facts, results or sources.";
+Ask before deleting or replacing notes the user did not ask you to change. If a tool fails, say so plainly. Never invent facts, results or sources. \
+Your own knowledge stops before today (the date is at the end of this prompt): for weather, news, prices or anything current, use the weather or web_search tool and trust what it returns over what you remember.";
 
 #[derive(Clone, Debug)]
 pub struct AgentConfig {

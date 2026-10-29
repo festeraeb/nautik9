@@ -91,6 +91,7 @@ impl Registry {
             Arc::new(Memory),
             Arc::new(WebSearch),
             Arc::new(WebFetch),
+            Arc::new(Weather::open_meteo()),
             Arc::new(HttpRequest),
             Arc::new(ChatHistory),
             Arc::new(SkillTool),
@@ -534,6 +535,141 @@ impl Tool for WebSearch {
     }
 }
 
+// ── weather (Open-Meteo: no key, real forecast numbers) ─────────────────────
+
+pub struct Weather {
+    geocode_url: String,
+    forecast_url: String,
+}
+
+impl Weather {
+    pub fn open_meteo() -> Self {
+        Self::with_urls("https://geocoding-api.open-meteo.com/v1/search", "https://api.open-meteo.com/v1/forecast")
+    }
+    pub fn with_urls(geocode: &str, forecast: &str) -> Self {
+        Self { geocode_url: geocode.into(), forecast_url: forecast.into() }
+    }
+}
+
+/// WMO weather code to words (the codes Open-Meteo uses).
+pub fn wmo_text(code: i64) -> &'static str {
+    match code {
+        0 => "clear",
+        1 => "mainly clear",
+        2 => "partly cloudy",
+        3 => "overcast",
+        45 | 48 => "fog",
+        51 | 53 | 55 => "drizzle",
+        56 | 57 => "freezing drizzle",
+        61 => "light rain",
+        63 => "rain",
+        65 => "heavy rain",
+        66 | 67 => "freezing rain",
+        71 => "light snow",
+        73 => "snow",
+        75 => "heavy snow",
+        77 => "snow grains",
+        80 | 81 => "rain showers",
+        82 => "violent rain showers",
+        85 | 86 => "snow showers",
+        95 => "thunderstorm",
+        96 | 99 => "thunderstorm with hail",
+        _ => "unknown",
+    }
+}
+
+fn c_and_f(c: &Value) -> String {
+    match c.as_f64() {
+        Some(c) => format!("{:.0} °C / {:.0} °F", c, c * 9.0 / 5.0 + 32.0),
+        None => "?".into(),
+    }
+}
+
+#[async_trait]
+impl Tool for Weather {
+    fn name(&self) -> &str {
+        "weather"
+    }
+    fn description(&self) -> &str {
+        "Current weather and the daily forecast (up to 7 days) for a place name or lat/lon, from Open-Meteo. Use this for any weather question instead of web_search."
+    }
+    fn parameters(&self) -> Value {
+        json!({"type":"object","properties":{"place":{"type":"string","description":"city or place, e.g. Detroit, Michigan"},"lat":{"type":"number"},"lon":{"type":"number"},"days":{"type":"integer","description":"1-7, default 3"}}})
+    }
+    fn parallel(&self) -> bool {
+        true
+    }
+    fn read_only(&self) -> bool {
+        true
+    }
+    async fn call(&self, a: &Value, c: &ToolCtx) -> Result<String, String> {
+        let days = a["days"].as_u64().unwrap_or(3).clamp(1, 7);
+        let (lat, lon, name) = match (a["lat"].as_f64(), a["lon"].as_f64()) {
+            (Some(la), Some(lo)) => (la, lo, format!("{la:.4}, {lo:.4}")),
+            _ => {
+                let place = a["place"].as_str().filter(|p| !p.trim().is_empty()).ok_or("give a place or lat and lon")?;
+                // The geocoder matches a bare name, so "Detroit, Michigan" is looked up as "Detroit" and
+                // the rest is used to pick among the matches.
+                let mut parts = place.split(',').map(str::trim);
+                let head = parts.next().unwrap_or(place);
+                let hint: Vec<String> = parts.map(|p| p.to_lowercase()).collect();
+                let v: Value = c.http.get(&self.geocode_url).query(&[("name", head), ("count", "10"), ("format", "json")]).send().await.map_err(|e| format!("geocoding failed: {e}"))?.json().await.map_err(|e| format!("geocoding failed: {e}"))?;
+                let hits = v["results"].as_array().cloned().unwrap_or_default();
+                let fits = |r: &Value| hint.iter().all(|h| [&r["admin1"], &r["country"], &r["country_code"]].iter().any(|f| f.as_str().is_some_and(|f| f.to_lowercase().contains(h.as_str()))));
+                let r = hits.iter().find(|r| fits(r)).or_else(|| hits.first()).ok_or_else(|| format!("no place called `{place}` was found"))?;
+                let label = [&r["name"], &r["admin1"], &r["country"]].iter().filter_map(|f| f.as_str()).collect::<Vec<_>>().join(", ");
+                (r["latitude"].as_f64().ok_or("geocoder gave no latitude")?, r["longitude"].as_f64().ok_or("geocoder gave no longitude")?, label)
+            }
+        };
+        let resp = c
+            .http
+            .get(&self.forecast_url)
+            .query(&[
+                ("latitude", lat.to_string()),
+                ("longitude", lon.to_string()),
+                ("current", "temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m,wind_gusts_10m".into()),
+                ("daily", "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum,wind_speed_10m_max".into()),
+                ("timezone", "auto".into()),
+                ("forecast_days", days.to_string()),
+                ("wind_speed_unit", "mph".into()),
+            ])
+            .send()
+            .await
+            .map_err(|e| format!("forecast failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("forecast failed: HTTP {}", resp.status().as_u16()));
+        }
+        let v: Value = resp.json().await.map_err(|e| format!("forecast failed: {e}"))?;
+        let cur = &v["current"];
+        let mut out = format!(
+            "Weather for {name} (Open-Meteo, https://open-meteo.com), local time {} {}\nNow: {}, {} (feels {}), humidity {}%, wind {} mph gusting {} mph, precipitation {} mm\n",
+            cur["time"].as_str().unwrap_or("?"),
+            v["timezone_abbreviation"].as_str().unwrap_or(""),
+            wmo_text(cur["weather_code"].as_i64().unwrap_or(-1)),
+            c_and_f(&cur["temperature_2m"]),
+            c_and_f(&cur["apparent_temperature"]),
+            cur["relative_humidity_2m"],
+            cur["wind_speed_10m"],
+            cur["wind_gusts_10m"],
+            cur["precipitation"],
+        );
+        let d = &v["daily"];
+        for i in 0..d["time"].as_array().map_or(0, |a| a.len()) {
+            out.push_str(&format!(
+                "{}: {}, high {}, low {}, rain chance {}%, rain {} mm, wind up to {} mph\n",
+                d["time"][i].as_str().unwrap_or("?"),
+                wmo_text(d["weather_code"][i].as_i64().unwrap_or(-1)),
+                c_and_f(&d["temperature_2m_max"][i]),
+                c_and_f(&d["temperature_2m_min"][i]),
+                d["precipitation_probability_max"][i],
+                d["precipitation_sum"][i],
+                d["wind_speed_10m_max"][i],
+            ));
+        }
+        Ok(out)
+    }
+}
+
 struct WebFetch;
 #[async_trait]
 impl Tool for WebFetch {
@@ -942,6 +1078,33 @@ mod tests {
         assert!(out.contains("--- page 2 ---") && out.contains("could not read"), "{out}");
         let links = t.call(&json!({"query":"cedarville","read":0}), &c).await.unwrap();
         assert!(!links.contains("--- page"), "{links}");
+    }
+
+    #[tokio::test]
+    async fn weather_geocodes_picks_the_right_state_and_reports_numbers() {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", l.local_addr().unwrap());
+        let app = axum::Router::new()
+            .route("/geo", axum::routing::get(|q: axum::extract::Query<HashMap<String, String>>| async move {
+                assert_eq!(q.get("name").map(String::as_str), Some("Detroit"));
+                axum::Json(json!({"results":[
+                    {"name":"Detroit","admin1":"Texas","country":"United States","latitude":33.66,"longitude":-95.27},
+                    {"name":"Detroit","admin1":"Michigan","country":"United States","latitude":42.33,"longitude":-83.05}]}))
+            }))
+            .route("/fc", axum::routing::get(|q: axum::extract::Query<HashMap<String, String>>| async move {
+                assert_eq!(q.get("latitude").map(String::as_str), Some("42.33"));
+                axum::Json(json!({"timezone_abbreviation":"EDT",
+                    "current":{"time":"2026-10-29T08:00","temperature_2m":10.0,"apparent_temperature":8.0,"relative_humidity_2m":80,"precipitation":0.0,"weather_code":3,"wind_speed_10m":9.5,"wind_gusts_10m":20.1},
+                    "daily":{"time":["2026-10-29"],"weather_code":[61],"temperature_2m_max":[12.0],"temperature_2m_min":[4.0],"precipitation_probability_max":[70],"precipitation_sum":[3.2],"wind_speed_10m_max":[15.0]}}))
+            }));
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        let c = ctx(WayfinderVault::in_memory().unwrap(), &[]);
+        let w = Weather::with_urls(&format!("{base}/geo"), &format!("{base}/fc"));
+        let out = w.call(&json!({"place":"Detroit, Michigan","days":1}), &c).await.unwrap();
+        assert!(out.contains("Detroit, Michigan, United States"), "{out}");
+        assert!(out.contains("Now: overcast, 10 °C / 50 °F"), "{out}");
+        assert!(out.contains("2026-10-29: light rain, high 12 °C / 54 °F, low 4 °C / 39 °F, rain chance 70%"), "{out}");
+        assert!(w.call(&json!({}), &c).await.unwrap_err().contains("place"));
     }
 
     #[test]
