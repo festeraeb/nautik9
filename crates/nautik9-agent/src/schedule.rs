@@ -1,8 +1,11 @@
 //! Schedules: Jade's cron / crontab / heartbeat, in Rust.
 //!
 //! * A schedule is `spec` + `prompt`: when due, the runner runs one owner agent turn with the
-//!   prompt in a session of its own ("⏰ <spec>"). Kind is always `prompt` for now (a `flow`
-//!   kind is Jade's later step and is not built).
+//!   prompt in a session of its own ("⏰ <spec>"). Kind `prompt` is the default.
+//!   Kind `playbook` (payload = playbook name) runs that playbook with trigger `schedule`
+//!   (see `flow::playbook_job`): only an approved playbook runs; an unapproved or changed one is
+//!   a recorded ERROR in `last_result` and the log, and nothing runs. Flows (`flow.rs`) are
+//!   separate: they have their own triggers, including a schedule trigger.
 //! * Specs are standard 5-field cron (`minute hour day month weekday`, with `*`, `*/n`, `a-b`,
 //!   `a-b/n`, lists; weekday 0 or 7 = Sunday; numbers only, no month/day names) or simple English:
 //!   `every N minutes|hours` (also `every minute|hour`), `hourly`, `daily at HH:MM`,
@@ -16,7 +19,8 @@
 //!   fire in the repeated hour a second time. Interval specs are unaffected.
 //! * Missed runs (server down) are not replayed: a schedule that is overdue at start runs once
 //!   on the next tick, then continues from "now".
-//! * `Jade/crontab` (lines `<5-field cron> prompt <text>`, `#` comments) is re-read every tick.
+//! * `Jade/crontab` (lines `<5-field cron> prompt <text>` or `<5-field cron> playbook <name>`,
+//!   `#` comments) is re-read every tick.
 //!   A bad line is written to the log once (again if it changes), never silently skipped.
 //!   Crontab entries live in memory only (next run is computed from when the line is first seen).
 //! * `Jade/HEARTBEAT.md`: when it has content and `heartbeat_minutes` > 0, every N minutes its
@@ -290,18 +294,30 @@ impl Schedules {
     }
 
     pub async fn add(&self, spec: &str, prompt: &str, now: DateTime<FixedOffset>) -> Result<Schedule, String> {
-        let parsed = parse_spec(spec)?;
         if prompt.trim().is_empty() {
             return Err("the prompt is empty".into());
         }
+        self.insert("prompt", spec, prompt, now).await
+    }
+
+    /// A schedule that runs the playbook `name` (trigger `schedule`; it must be approved when it runs).
+    pub async fn add_playbook(&self, spec: &str, name: &str, now: DateTime<FixedOffset>) -> Result<Schedule, String> {
+        if !crate::playbook::valid_name(name.trim()) {
+            return Err(format!("`{name}` is not a valid playbook name"));
+        }
+        self.insert("playbook", spec, name.trim(), now).await
+    }
+
+    async fn insert(&self, kind: &str, spec: &str, prompt: &str, now: DateTime<FixedOffset>) -> Result<Schedule, String> {
+        let parsed = parse_spec(spec)?;
         let next = next_local(&parsed, now)?.to_rfc3339();
         let id = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
         self.conn
             .lock()
             .await
             .execute(
-                "INSERT INTO schedules (id, spec, kind, payload, enabled, next_run, created_at) VALUES (?1, ?2, 'prompt', ?3, 1, ?4, ?5)",
-                params![id, spec.trim(), prompt.trim(), next, now.to_rfc3339()],
+                "INSERT INTO schedules (id, spec, kind, payload, enabled, next_run, created_at) VALUES (?1, ?2, ?6, ?3, 1, ?4, ?5)",
+                params![id, spec.trim(), prompt.trim(), next, now.to_rfc3339(), kind],
             )
             .map_err(e2s)?;
         self.get(&id).await?.ok_or_else(|| "schedule vanished".into())
@@ -369,7 +385,17 @@ impl Schedules {
 pub struct CronLine {
     pub spec_text: String,
     pub spec: Spec,
+    /// The prompt text, or the playbook name when `kind` is `playbook`.
     pub prompt: String,
+    /// `prompt` or `playbook`.
+    pub kind: String,
+}
+
+impl CronLine {
+    /// Identity of a line between ticks (a playbook line never equals a prompt line).
+    fn key(&self) -> (String, String) {
+        (self.spec_text.clone(), if self.kind == "playbook" { format!("\u{1}playbook {}", self.prompt) } else { self.prompt.clone() })
+    }
 }
 
 /// Parse the crontab note: good lines, and `line N: ...` errors for the bad ones.
@@ -381,10 +407,14 @@ pub fn parse_crontab(text: &str) -> (Vec<CronLine>, Vec<String>) {
             continue;
         }
         let toks: Vec<&str> = l.split_whitespace().collect();
-        if toks.len() < 7 || toks[5] != "prompt" {
-            bad.push(format!("line {}: expected `<5 cron fields> prompt <text>`: {l}", i + 1));
-            continue;
-        }
+        let kind = match toks.get(5) {
+            Some(&"prompt") if toks.len() >= 7 => "prompt",
+            Some(&"playbook") if toks.len() == 7 && crate::playbook::valid_name(toks[6]) => "playbook",
+            _ => {
+                bad.push(format!("line {}: expected `<5 cron fields> prompt <text>` or `<5 cron fields> playbook <name>`: {l}", i + 1));
+                continue;
+            }
+        };
         let spec_text = toks[..5].join(" ");
         let prompt = toks[6..].join(" ");
         match parse_cron(&spec_text) {
@@ -393,7 +423,7 @@ pub fn parse_crontab(text: &str) -> (Vec<CronLine>, Vec<String>) {
                 if spec.next_after(now_local(), &local_resolver).is_none() {
                     bad.push(format!("line {}: that schedule never fires: {l}", i + 1));
                 } else {
-                    good.push(CronLine { spec_text, spec, prompt });
+                    good.push(CronLine { spec_text, spec, prompt, kind: kind.to_string() });
                 }
             }
             Err(e) => bad.push(format!("line {}: {e}: {l}", i + 1)),
@@ -475,6 +505,17 @@ impl Runner {
     async fn run_db(&self, s: &Schedule, now: DateTime<FixedOffset>) {
         let started = now_local().max(now);
         let title = format!("⏰ {}", s.spec);
+        if s.kind == "playbook" {
+            let (ok, text) = crate::flow::playbook_job(&self.agent, &s.payload).await;
+            let result = if ok { text } else { format!("ERROR: {text}") };
+            let finished = now_local().max(now);
+            let next = parse_spec(&s.spec).ok().and_then(|p| p.next_after(finished, &local_resolver));
+            if let Err(e) = self.sched.record(&s.id, started, &one_line(&result, 500), next).await {
+                tracing::warn!("schedule {}: {e}", s.id);
+            }
+            self.log(started, if ok { "ok" } else { "ERROR" }, &format!("{title} playbook {}", s.payload), &result).await;
+            return;
+        }
         let sid = match &s.session_id {
             Some(id) if self.agent.ctx.store.exists(id).await.unwrap_or(false) => Ok(id.clone()),
             _ => match self.agent.ctx.store.create_session(&title).await {
@@ -547,31 +588,37 @@ impl Runner {
         for b in fresh {
             self.log(now, "ERROR", CRONTAB_PATH, &b).await;
         }
-        let keys: HashSet<(String, String)> = good.iter().map(|g| (g.spec_text.clone(), g.prompt.clone())).collect();
+        let keys: HashSet<(String, String)> = good.iter().map(CronLine::key).collect();
         let mut due = Vec::new();
         {
             let mut st = self.st.lock().unwrap();
             st.cron.retain(|k, _| keys.contains(k));
             for g in &good {
-                let k = (g.spec_text.clone(), g.prompt.clone());
+                let k = g.key();
                 match st.cron.get(&k).copied() {
                     None => {
                         if let Some(nx) = g.spec.next_after(now, &local_resolver) {
                             st.cron.insert(k, nx);
                         }
                     }
-                    Some(t) if t <= now && !due.iter().any(|d: &CronLine| d.spec_text == g.spec_text && d.prompt == g.prompt) => due.push(g.clone()),
+                    Some(t) if t <= now && !due.iter().any(|d: &CronLine| d.key() == g.key()) => due.push(g.clone()),
                     _ => {}
                 }
             }
         }
         for g in &due {
-            self.run_titled(&format!("⏰ {} (crontab)", g.spec_text), &g.prompt).await;
+            if g.kind == "playbook" {
+                let started = now_local();
+                let (ok, text) = crate::flow::playbook_job(&self.agent, &g.prompt).await;
+                self.log(started, if ok { "ok" } else { "ERROR" }, &format!("⏰ {} (crontab playbook {})", g.spec_text, g.prompt), &text).await;
+            } else {
+                self.run_titled(&format!("⏰ {} (crontab)", g.spec_text), &g.prompt).await;
+            }
             let nx = g.spec.next_after(now_local().max(now), &local_resolver);
             let mut st = self.st.lock().unwrap();
             match nx {
-                Some(nx) => st.cron.insert((g.spec_text.clone(), g.prompt.clone()), nx),
-                None => st.cron.remove(&(g.spec_text.clone(), g.prompt.clone())),
+                Some(nx) => st.cron.insert(g.key(), nx),
+                None => st.cron.remove(&g.key()),
             };
         }
         due.len()

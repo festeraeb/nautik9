@@ -949,6 +949,7 @@
             <button class="tab-btn" onclick="switchTab('senses', this)">📡 Senses</button>
             <button class="tab-btn" onclick="switchTab('fleet', this)">🚀 Fleet Deck</button>
             <button class="tab-btn" onclick="switchTab('lemonade', this)">💬 Chat</button>
+            <button class="tab-btn" onclick="switchTab('auto', this)">&#9881; Automations</button>
         </nav>
     </div>
 
@@ -1224,6 +1225,40 @@
         </div>
     </section>
 
+    <!-- 7. Automations: playbooks, flows, schedules (owner actions; the model cannot approve) -->
+    <section id="pane-auto" class="section-pane">
+        <style>
+            .au-row { border-top: 1px solid rgba(148,163,184,0.25); padding: 10px 0; font-size: 0.85rem; }
+            .au-row:first-child { border-top: none; }
+            .au-name { font-weight: 700; }
+            .au-sub { color: var(--text-sub); font-size: 0.78rem; margin-top: 2px; word-break: break-word; }
+            .au-badge { display: inline-block; border-radius: 8px; padding: 1px 7px; font-size: 0.72rem; margin-left: 6px; background: rgba(148,163,184,0.2); }
+            .au-ok { color: var(--emerald); background: var(--emerald-soft); }
+            .au-bad { color: var(--rose); background: rgba(244,63,94,0.12); }
+            .au-btns { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; }
+            .au-btns button, .au-form button { border: 1px solid rgba(148,163,184,0.5); background: transparent; color: inherit; border-radius: 8px; padding: 4px 10px; font-size: 0.78rem; cursor: pointer; }
+            .au-form { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+            .au-form input, .au-form select { flex: 1 1 140px; min-width: 0; padding: 5px 8px; border-radius: 8px; border: 1px solid rgba(148,163,184,0.5); background: transparent; color: inherit; font-size: 0.82rem; }
+            #auOut { white-space: pre-wrap; word-break: break-word; font-size: 0.76rem; max-height: 320px; overflow: auto; margin: 0; }
+        </style>
+        <div class="card">
+            <div class="card-header"><span class="card-title">&#9881; Automations</span>
+                <button class="btn-primary" style="padding:4px 10px;font-size:0.75rem" onclick="loadAuto()">Refresh</button></div>
+            <div style="font-size:0.78rem;color:var(--text-sub)">Playbooks and flows are notes (<code>Jade/Playbooks/</code>, <code>Jade/Flows/</code>). Only you approve them here; a changed file needs approval again. Unapproved playbooks and flows never run on their own.</div>
+        </div>
+        <div class="card"><div class="card-header"><span class="card-title">Playbooks</span></div><div id="auPlaybooks">Loading...</div></div>
+        <div class="card"><div class="card-header"><span class="card-title">Flows</span></div><div id="auFlows">Loading...</div></div>
+        <div class="card"><div class="card-header"><span class="card-title">Schedules</span></div><div id="auSchedules">Loading...</div>
+            <div class="au-form">
+                <input id="auSpec" placeholder="when: daily at 08:00, every 30 minutes, 0 9 * * 1-5">
+                <select id="auKind"><option value="prompt">ask Mack (prompt)</option><option value="playbook">run playbook</option></select>
+                <input id="auText" placeholder="prompt text, or playbook name">
+                <button onclick="auAddSchedule()">Add schedule</button>
+            </div>
+        </div>
+        <div class="card"><div class="card-header"><span class="card-title">Result</span></div><pre id="auOut">Nothing yet.</pre></div>
+    </section>
+
     <script>
         // ---- Access token: kept in this browser after the first visit ----
         const TOKEN_KEY = 'nautik9_token';
@@ -1359,6 +1394,7 @@
             if (tabId === 'vault') loadNotes();
             if (tabId === 'senses') initSensors();
             if (tabId === 'fleet') loadFleetTelemetry();
+            if (tabId === 'auto') loadAuto();
         }
 
         function selectTier(card, tierName, engine) {
@@ -1966,6 +2002,102 @@
                 mackMsg.innerText = 'Request failed: ' + e;
             }
             stream.scrollTop = stream.scrollHeight;
+        }
+
+        // ---- Automations tab: playbooks, flows, schedules ----
+        function auOut(label, status, data) {
+            document.getElementById('auOut').textContent = label + ' -> HTTP ' + status + '\n' + (typeof data === 'string' ? data : JSON.stringify(data, null, 2));
+        }
+        async function auJson(method, url, body) {
+            const init = { method };
+            if (body !== undefined) { init.headers = { 'Content-Type': 'application/json' }; init.body = JSON.stringify(body); }
+            const res = await fetch(url, init);
+            let data = null;
+            try { data = await res.json(); } catch (e) { data = null; }
+            return { status: res.status, ok: res.ok, data };
+        }
+        function auBadge(text, good) { return '<span class="au-badge ' + (good === true ? 'au-ok' : good === false ? 'au-bad' : '') + '">' + esc(text) + '</span>'; }
+        function auLast(l) { return l ? 'last run ' + esc(l.at) + ' (' + esc(l.trigger) + ') ' + (l.ok ? 'ok' : 'FAILED') : 'never run'; }
+        function auBtn(kind, act, name, label) { return '<button data-kind="' + kind + '" data-act="' + act + '" data-name="' + esc(name) + '">' + label + '</button>'; }
+        function auTrigger(t) {
+            if (!t) return '';
+            if (t.type === 'schedule') return 'schedule: ' + t.when;
+            if (t.type === 'note_changed') return 'note changed: ' + t.path;
+            if (t.type === 'sms_received') return 'text received' + (t.from ? ' from ' + t.from : '') + (t.contains ? ' containing "' + t.contains + '"' : '');
+            if (t.type === 'webhook') return 'webhook';
+            return t.type;
+        }
+        async function loadAuto() {
+            const [pb, fl, sc] = await Promise.all([auJson('GET', '/api/agent/playbooks'), auJson('GET', '/api/agent/flows'), auJson('GET', '/api/agent/schedules')]);
+            const pbBox = document.getElementById('auPlaybooks');
+            if (!pb.ok) pbBox.textContent = 'Playbooks unavailable (HTTP ' + pb.status + '): ' + ((pb.data && pb.data.error) || '');
+            else if (!pb.data.length) pbBox.textContent = 'No playbooks. Write a note Jade/Playbooks/<name>.json.';
+            else pbBox.innerHTML = pb.data.map(p => '<div class="au-row"><span class="au-name">' + esc(p.name) + '</span>' +
+                auBadge(p.valid ? 'valid' : 'invalid', p.valid) + auBadge(p.approved ? 'approved' : 'not approved', p.approved) +
+                '<div class="au-sub">' + esc(p.description || '') + (p.tasks != null ? ' (' + esc(p.tasks) + ' tasks)' : '') + (p.error ? ' ' + esc(p.error) : '') + ' &middot; ' + auLast(p.last_run) + '</div>' +
+                '<div class="au-btns">' + auBtn('playbooks', 'show', p.name, 'Show') + auBtn('playbooks', 'check', p.name, 'Check') + auBtn('playbooks', 'run', p.name, 'Run now') + auBtn('playbooks', 'approve', p.name, 'Approve') + '</div></div>').join('');
+            const flBox = document.getElementById('auFlows');
+            if (!fl.ok) flBox.textContent = 'Flows unavailable (HTTP ' + fl.status + '): ' + ((fl.data && fl.data.error) || '');
+            else if (!fl.data.length) flBox.textContent = 'No flows. Write a note Jade/Flows/<name>.json.';
+            else flBox.innerHTML = fl.data.map(f => '<div class="au-row"><span class="au-name">' + esc(f.name) + '</span>' +
+                auBadge(f.valid ? 'valid' : 'invalid', f.valid) + auBadge(f.approved ? 'approved' : 'not approved', f.approved) + (f.enabled === false ? auBadge('disabled', false) : '') +
+                (f.playbook_approved === false ? auBadge('its playbook is not approved', false) : '') +
+                '<div class="au-sub">' + esc(auTrigger(f.trigger)) + ' &rarr; ' + esc(f.action || '') + (f.trigger && f.trigger.type === 'webhook' ? ' &middot; POST /api/agent/flows/' + esc(f.name) + '/hook' : '') + ' &middot; ' + auLast(f.last_run) + '</div>' +
+                ((f.problems && f.problems.length) ? '<div class="au-sub" style="color:var(--rose)">' + f.problems.map(esc).join('<br>') + '</div>' : '') +
+                '<div class="au-btns">' + auBtn('flows', 'show', f.name, 'Show') + auBtn('flows', 'check', f.name, 'Check') + auBtn('flows', 'run', f.name, 'Run now') + auBtn('flows', 'approve', f.name, 'Approve') + '</div></div>').join('');
+            const scBox = document.getElementById('auSchedules');
+            if (!sc.ok) scBox.textContent = 'Schedules unavailable (HTTP ' + sc.status + '): ' + ((sc.data && sc.data.error) || '');
+            else if (!sc.data.length) scBox.textContent = 'No schedules.';
+            else scBox.innerHTML = sc.data.map(s => '<div class="au-row"><span class="au-name">' + esc(s.spec) + '</span>' + auBadge(s.kind === 'playbook' ? 'playbook ' + s.payload : 'prompt') + auBadge(s.enabled ? 'on' : 'off', s.enabled) +
+                '<div class="au-sub">' + (s.kind === 'prompt' ? esc(s.payload) + ' &middot; ' : '') + 'next ' + esc(s.next_run || '-') + ' &middot; last ' + esc(s.last_run || 'never') + (s.last_result ? ': ' + esc(s.last_result) : '') + '</div>' +
+                '<div class="au-btns">' + auBtn('schedules', 'run', s.id, 'Run now') + auBtn('schedules', 'delete', s.id, 'Delete') + '</div></div>').join('');
+        }
+        async function auAct(kind, act, name) {
+            const base = '/api/agent/' + kind + '/' + encodeURIComponent(name);
+            if (kind === 'schedules') {
+                if (act === 'delete') {
+                    if (!confirm('Delete schedule ' + name + '?')) return;
+                    const r = await auJson('DELETE', base);
+                    auOut('delete ' + name, r.status, r.data);
+                } else {
+                    const r = await auJson('POST', base + '/run', {});
+                    auOut('run schedule ' + name, r.status, r.data);
+                }
+                return loadAuto();
+            }
+            if (act === 'show') {
+                const r = await auJson('GET', base);
+                auOut('show ' + name, r.status, r.ok ? ('approved: ' + r.data.approved + '\nsha256: ' + r.data.sha256 + '\n\n' + r.data.json) : r.data);
+            } else if (act === 'check') {
+                const r = await auJson('POST', base + '/check');
+                auOut('check ' + name, r.status, r.data);
+            } else if (act === 'run') {
+                const r = await auJson('POST', base + '/run', {});
+                auOut('run ' + name, r.status, r.data);
+                await loadAuto();
+            } else if (act === 'approve') {
+                // Approval is a decision about this exact text: show it before asking.
+                const s = await auJson('GET', base);
+                if (!s.ok) return auOut('approve ' + name, s.status, s.data);
+                const text = s.data.json.length > 1500 ? s.data.json.slice(0, 1500) + '\n... (cut)' : s.data.json;
+                if (!confirm('Approve ' + kind.slice(0, -1) + ' "' + name + '"? It may then run on its own. Exactly this text:\n\n' + text)) return;
+                const r = await auJson('POST', base + '/approve');
+                auOut('approve ' + name, r.status, r.data);
+                await loadAuto();
+            }
+        }
+        document.addEventListener('click', ev => {
+            const b = ev.target.closest && ev.target.closest('button[data-act]');
+            if (b && b.dataset.kind) auAct(b.dataset.kind, b.dataset.act, b.dataset.name);
+        });
+        async function auAddSchedule() {
+            const spec = document.getElementById('auSpec').value.trim();
+            const kind = document.getElementById('auKind').value;
+            const text = document.getElementById('auText').value.trim();
+            const body = kind === 'playbook' ? { spec, playbook: text } : { spec, prompt: text };
+            const r = await auJson('POST', '/api/agent/schedules', body);
+            auOut('add schedule', r.status, r.data);
+            if (r.ok) { document.getElementById('auText').value = ''; loadAuto(); }
         }
 
         // Auto initialization

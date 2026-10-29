@@ -8,6 +8,7 @@
 //!   POST   /api/agent/sessions/{id}/retry   -> TurnResult for the last user message, answered again
 //!   GET    /api/agent/schedules             -> [Schedule]
 //!   POST   /api/agent/schedules             {spec, prompt} -> Schedule (400 on an unknown spec)
+//!                                           {spec, playbook} instead adds a schedule that runs that approved playbook
 //!   DELETE /api/agent/schedules/{id}
 //!   POST   /api/agent/schedules/{id}/run    run it now -> Schedule (409 while another run is going)
 //!   GET    /api/agent/export?format=openai|sharegpt&rated=up|down|any -> JSONL of stored chats
@@ -455,6 +456,9 @@ pub async fn add_schedule(State(st): State<AppState>, Json(p): Json<Value>) -> R
         Ok(a) => a,
         Err(r) => return r,
     };
+    if let Some(pb) = p["playbook"].as_str() {
+        return crate::flow_api::add_playbook_schedule(a, p["spec"].as_str(), pb).await;
+    }
     let (Some(spec), Some(prompt)) = (p["spec"].as_str(), p["prompt"].as_str()) else {
         return bad(StatusCode::BAD_REQUEST, "need string `spec` and `prompt`");
     };

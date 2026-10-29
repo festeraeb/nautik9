@@ -82,6 +82,9 @@ const MAX_TIMEOUT_S: u64 = 3600;
 const RESERVED: &[&str] = &["item", "index", "true", "false", "null", "and", "or", "not", "in", "contains", "startswith", "endswith"];
 /// Tools a playbook may never call (no recursion, no hidden model loop).
 const FORBIDDEN_TOOLS: &[&str] = &["playbook", "delegate"];
+pub const MAX_RETRIES: u32 = 10;
+pub const MAX_DELAY_S: f64 = 300.0;
+pub const MAX_WAIT_S: f64 = 600.0;
 
 // ── expressions ─────────────────────────────────────────────────────────────
 
@@ -811,7 +814,7 @@ pub fn render_value(v: &Value, scope: &Scope) -> R<Value> {
     }
 }
 
-fn template_names(v: &Value, out: &mut Vec<String>) -> R<()> {
+pub(crate) fn template_names(v: &Value, out: &mut Vec<String>) -> R<()> {
     match v {
         Value::String(s) if s.contains("{{") => {
             for seg in parse_template(s)? {
@@ -871,6 +874,32 @@ pub struct Task {
     pub ignore_errors: bool,
     #[serde(default)]
     pub tasks: Option<Vec<Task>>,
+    /// Extra attempts after the first (0..=10). With `until` and no `retries`, 3.
+    #[serde(default)]
+    pub retries: Option<u32>,
+    /// Seconds to wait between attempts (0..=300).
+    #[serde(default)]
+    pub delay: Option<f64>,
+    /// Expression over `result` (and the register name): retry until it is true.
+    #[serde(default)]
+    pub until: Option<String>,
+    /// Expression over `result` (and the register name): when true the task fails, when false it
+    /// succeeds, whatever the action itself reported.
+    #[serde(default)]
+    pub failed_when: Option<String>,
+    /// Name of the loop variable instead of `item` (the index is `<name>_index`).
+    #[serde(default)]
+    pub loop_var: Option<String>,
+    /// Blocks only: tasks that run when the block fails (the failure text is `error`).
+    #[serde(default)]
+    pub rescue: Option<Vec<Task>>,
+    /// Blocks only: tasks that always run after the block (and its rescue).
+    #[serde(default)]
+    pub always: Option<Vec<Task>>,
+    /// http_request / web_fetch only: the hosts the URL (and every redirect) may point at.
+    /// `example.com` or `*.example.com`. An empty list allows nothing.
+    #[serde(default)]
+    pub allow_hosts: Option<Vec<String>>,
 }
 
 impl Task {
@@ -992,6 +1021,33 @@ impl Checker<'_> {
         }
     }
 
+    /// retries / delay / until / failed_when: ranges and the names their expressions use.
+    fn retry_fields(&mut self, t: &Task, at: &str, scope: &HashSet<String>) {
+        if let Some(r) = t.retries {
+            if r > MAX_RETRIES {
+                self.problems.push(format!("{at}: retries must be 0..={MAX_RETRIES}"));
+            }
+        }
+        if let Some(d) = t.delay {
+            if !(0.0..=MAX_DELAY_S).contains(&d) {
+                self.problems.push(format!("{at}: delay must be 0..={MAX_DELAY_S} seconds"));
+            }
+            if t.retries.is_none() && t.until.is_none() {
+                self.problems.push(format!("{at}: delay needs retries or until"));
+            }
+        }
+        let mut rs = scope.clone();
+        rs.insert("result".into());
+        if let Some(r) = &t.register {
+            rs.insert(r.clone());
+        }
+        for (what, src) in [("until", &t.until), ("failed_when", &t.failed_when)] {
+            if let Some(src) = src {
+                self.expr_names(&format!("{at}: {what}"), src, &rs);
+            }
+        }
+    }
+
     fn tasks(&mut self, tasks: &[Task], prefix: &str, declared: &mut HashSet<String>) {
         for (i, t) in tasks.iter().enumerate() {
             let path = format!("{prefix}{}", i + 1);
@@ -1009,8 +1065,26 @@ impl Checker<'_> {
             self.plan.push(PlanStep { path: path.clone(), name: t.label(), action: t.action.clone(), when: when.clone(), looping: t.looping.is_some(), register: t.register.clone(), tags: t.tags.clone() });
             let mut inner = declared.clone();
             if t.looping.is_some() {
-                inner.insert("item".into());
-                inner.insert("index".into());
+                match t.loop_var.as_deref() {
+                    None => {
+                        inner.insert("item".into());
+                        inner.insert("index".into());
+                    }
+                    Some(lv) if valid_ident(lv) => {
+                        inner.insert(lv.to_string());
+                        inner.insert(format!("{lv}_index"));
+                    }
+                    Some(lv) => self.problems.push(format!("{at}: `{lv}` is not a usable loop_var name")),
+                }
+            } else if t.loop_var.is_some() {
+                self.problems.push(format!("{at}: loop_var needs a loop"));
+            }
+            self.retry_fields(t, &at, &inner);
+            if t.action != "block" && (t.rescue.is_some() || t.always.is_some()) {
+                self.problems.push(format!("{at}: only `block` tasks have rescue or always"));
+            }
+            if t.allow_hosts.is_some() && !matches!(t.action.as_str(), "http_request" | "web_fetch") {
+                self.problems.push(format!("{at}: allow_hosts only applies to http_request and web_fetch"));
             }
             if let Some(w) = &when {
                 self.expr_names(&at, w, &inner);
@@ -1050,6 +1124,20 @@ impl Checker<'_> {
                         }
                         _ => self.problems.push(format!("{at}: a block needs a non-empty `tasks` list")),
                     }
+                    if let Some(r) = &t.rescue {
+                        let mut d = declared.clone();
+                        d.insert("error".into());
+                        self.tasks(r, &format!("{path}.rescue."), &mut d);
+                        declared.extend(d);
+                    }
+                    if let Some(a) = &t.always {
+                        let mut d = declared.clone();
+                        self.tasks(a, &format!("{path}.always."), &mut d);
+                        declared.extend(d);
+                    }
+                    if t.retries.is_some() || t.until.is_some() || t.failed_when.is_some() || t.delay.is_some() {
+                        self.problems.push(format!("{at}: a block cannot have retries, until, delay or failed_when"));
+                    }
                 }
                 other => {
                     if t.tasks.is_some() {
@@ -1067,6 +1155,38 @@ impl Checker<'_> {
                                 self.tmpl_names(&at, v, &inner);
                             }
                             declared.extend(args_obj.keys().cloned());
+                        }
+                        "debug" => {
+                            if !args_obj.contains_key("msg") && !args_obj.contains_key("var") {
+                                self.problems.push(format!("{at}: debug needs args.msg or args.var"));
+                            }
+                            if let Some(Value::String(v)) = args_obj.get("var") {
+                                self.expr_names(&at, v, &inner);
+                            }
+                            if let Some(m) = args_obj.get("msg") {
+                                self.tmpl_names(&at, m, &inner);
+                            }
+                        }
+                        "wait" => {
+                            if !args_obj.contains_key("seconds") {
+                                self.problems.push(format!("{at}: wait needs args.seconds (0..={MAX_WAIT_S})"));
+                            }
+                            self.tmpl_names(&at, &Value::Object(args_obj.clone()), &inner);
+                        }
+                        "save" => {
+                            for need in ["path", "content"] {
+                                if !args_obj.contains_key(need) {
+                                    self.problems.push(format!("{at}: save needs args.{need}"));
+                                }
+                            }
+                            if let Some(Value::String(p)) = args_obj.get("path") {
+                                if !p.contains("{{") {
+                                    if let Err(e) = crate::playbook_ext::check_save_path(p) {
+                                        self.problems.push(format!("{at}: {e}"));
+                                    }
+                                }
+                            }
+                            self.tmpl_names(&at, &Value::Object(args_obj.clone()), &inner);
                         }
                         "fail" | "ask" => {
                             if other == "ask" && !args_obj.contains_key("prompt") {
@@ -1169,6 +1289,8 @@ impl Asker for Agent {
 pub enum Trigger {
     Manual,
     Schedule,
+    /// Fired by a flow (`flow.rs`): unattended, so approval is required like a schedule.
+    Flow,
 }
 
 impl Trigger {
@@ -1176,6 +1298,7 @@ impl Trigger {
         match self {
             Trigger::Manual => "manual",
             Trigger::Schedule => "schedule",
+            Trigger::Flow => "flow",
         }
     }
 }
@@ -1238,6 +1361,8 @@ struct Runner<'a> {
     vars: Scope,
     skip_tags: HashSet<String>,
     log: Vec<LogEntry>,
+    /// Set when a problem that `rescue` and `ignore_errors` must not hide was hit (bad expression ...).
+    fatal_hit: bool,
 }
 
 impl Runner<'_> {
@@ -1246,6 +1371,7 @@ impl Runner<'_> {
     }
 
     fn fatal(&mut self, path: &str, t: &Task, label: &str, msg: String) -> String {
+        self.fatal_hit = true;
         self.push(path, t, label, "failed", false, &msg);
         format!("task {path} ({label}): {msg}")
     }
@@ -1305,6 +1431,11 @@ impl Runner<'_> {
             None => vec![None],
         };
         let looped = t.looping.is_some();
+        let (var_name, idx_name) = match &t.loop_var {
+            Some(v) => (v.clone(), format!("{v}_index")),
+            None => ("item".to_string(), "index".to_string()),
+        };
+        let saved: Vec<(String, Option<Value>)> = if looped { [&var_name, &idx_name].iter().map(|k| ((*k).clone(), self.vars.get(*k).cloned())).collect() } else { vec![] };
         let mut results = Vec::new();
         let mut first_fail: Option<String> = None;
         for it in iterations {
@@ -1314,13 +1445,15 @@ impl Runner<'_> {
             };
             let item_val = it.as_ref().map(|(_, v)| v.clone());
             if let Some((i, v)) = it {
-                self.vars.insert("item".into(), v);
-                self.vars.insert("index".into(), Value::from(i));
+                self.vars.insert(var_name.clone(), v);
+                self.vars.insert(idx_name.clone(), Value::from(i));
             }
             let outcome = self.step(t, &ipath, &ilabel).await;
-            if looped {
-                self.vars.remove("item");
-                self.vars.remove("index");
+            for (k, old) in &saved {
+                match old {
+                    Some(v) => self.vars.insert(k.clone(), v.clone()),
+                    None => self.vars.remove(k),
+                };
             }
             let outcome = outcome?;
             let (ok, text, error, skipped) = match outcome {
@@ -1359,8 +1492,67 @@ impl Runner<'_> {
         }
     }
 
-    /// One execution (one loop iteration). `Err` is a fatal problem (bad expression, ...).
+    /// Evaluate `src` with `result` (and the task's register name) bound to `rv`.
+    fn eval_with_result(&mut self, t: &Task, src: &str, rv: &Value) -> R<Value> {
+        let mut keys = vec!["result".to_string()];
+        if let Some(r) = t.register.as_ref().filter(|r| *r != "result") {
+            keys.push(r.clone());
+        }
+        let saved: Vec<(String, Option<Value>)> = keys.into_iter().map(|k| (k.clone(), self.vars.insert(k, rv.clone()))).collect();
+        let out = eval_str(src, &self.vars);
+        for (k, old) in saved {
+            match old {
+                Some(v) => self.vars.insert(k, v),
+                None => self.vars.remove(&k),
+            };
+        }
+        out
+    }
+
+    /// One execution with `failed_when`, `until` and `retries` applied. `Err` is fatal.
     async fn step(&mut self, t: &Task, path: &str, label: &str) -> Result<Outcome, String> {
+        if t.action == "block" || (t.retries.is_none() && t.until.is_none() && t.failed_when.is_none()) {
+            return self.step_once(t, path, label).await;
+        }
+        let max = 1 + t.retries.unwrap_or(if t.until.is_some() { 3 } else { 0 }).min(MAX_RETRIES);
+        let delay = Duration::from_secs_f64(t.delay.unwrap_or(0.0).clamp(0.0, MAX_DELAY_S));
+        let mut n = 0;
+        loop {
+            n += 1;
+            let res = match self.step_once(t, path, label).await? {
+                Outcome::Skipped(w) => return Ok(Outcome::Skipped(w)),
+                Outcome::Done(r) => r,
+            };
+            let rv = |r: &Result<String, String>| json!({"ok": r.is_ok(), "result": r.as_ref().cloned().unwrap_or_default(), "error": r.as_ref().err().cloned().unwrap_or_default()});
+            let mut verdict = res;
+            if let Some(src) = &t.failed_when {
+                let v = self.eval_with_result(t, src, &rv(&verdict)).map_err(|e| self.fatal(path, t, label, format!("failed_when: {e}")))?;
+                verdict = match (truthy(&v), verdict) {
+                    (true, Err(e)) => Err(e),
+                    (true, Ok(_)) => Err(format!("failed_when matched: {src}")),
+                    (false, Ok(s)) | (false, Err(s)) => Ok(s),
+                };
+            }
+            if let (Ok(_), Some(src)) = (&verdict, &t.until) {
+                let v = self.eval_with_result(t, src, &rv(&verdict)).map_err(|e| self.fatal(path, t, label, format!("until: {e}")))?;
+                if !truthy(&v) {
+                    verdict = Err(format!("until not met: {src}"));
+                }
+            }
+            match verdict {
+                Ok(s) => return Ok(Outcome::Done(Ok(if n > 1 { format!("{s} (attempt {n}/{max})") } else { s }))),
+                Err(e) if n >= max => return Ok(Outcome::Done(Err(if n > 1 { format!("{e} (after {n} attempts)") } else { e }))),
+                Err(_) => {
+                    if !delay.is_zero() {
+                        tokio::time::sleep(delay).await;
+                    }
+                }
+            }
+        }
+    }
+
+    /// One execution (one loop iteration). `Err` is a fatal problem (bad expression, ...).
+    async fn step_once(&mut self, t: &Task, path: &str, label: &str) -> Result<Outcome, String> {
         match self.eval_when(t) {
             Ok(true) => {}
             Ok(false) => return Ok(Outcome::Skipped("when is false".into())),
@@ -1368,8 +1560,35 @@ impl Runner<'_> {
         }
         if t.action == "block" {
             let sub = t.tasks.as_deref().unwrap_or(&[]);
-            return Ok(Outcome::Done(match Box::pin(self.run_tasks(sub, &format!("{path}."))).await {
-                Ok(()) => Ok(format!("{} task(s)", sub.len())),
+            let mut res = Box::pin(self.run_tasks(sub, &format!("{path}."))).await;
+            let mut note = "";
+            if let (Err(e), Some(r), false) = (&res, &t.rescue, self.fatal_hit) {
+                let prev = self.vars.insert("error".into(), Value::String(e.clone()));
+                let rr = Box::pin(self.run_tasks(r, &format!("{path}.rescue."))).await;
+                match prev {
+                    Some(v) => self.vars.insert("error".into(), v),
+                    None => self.vars.remove("error"),
+                };
+                res = match rr {
+                    Ok(()) => {
+                        note = " (rescued)";
+                        Ok(())
+                    }
+                    Err(e2) => Err(format!("rescue failed: {e2}")),
+                };
+            }
+            if let Some(a) = &t.always {
+                let ar = Box::pin(self.run_tasks(a, &format!("{path}.always."))).await;
+                if let (Ok(()), Err(e)) = (&res, ar) {
+                    res = Err(format!("an always task failed: {e}"));
+                }
+            }
+            if self.fatal_hit {
+                // A fatal problem is never hidden by ignore_errors or an outer rescue.
+                return Err(res.err().unwrap_or_else(|| "fatal problem".into()));
+            }
+            return Ok(Outcome::Done(match res {
+                Ok(()) => Ok(format!("{} task(s){note}", sub.len())),
                 Err(e) => Err(format!("a task in the block failed: {e}")),
             }));
         }
@@ -1407,6 +1626,38 @@ impl Runner<'_> {
                 }
                 Ok(Outcome::Done(Ok(format!("set {}", names.join(", ")))))
             }
+            "debug" => {
+                let mut parts = Vec::new();
+                if let Some(m) = args.get("msg") {
+                    parts.push(to_text(m));
+                }
+                if let Some(Value::String(src)) = args.get("var") {
+                    match eval_str(src, &self.vars) {
+                        Ok(v) => parts.push(format!("{src} = {}", to_text(&v))),
+                        Err(e) => return Err(self.fatal(path, t, label, format!("debug var `{src}`: {e}"))),
+                    }
+                }
+                Ok(Outcome::Done(Ok(parts.join(" | "))))
+            }
+            "wait" => {
+                let secs = match &args["seconds"] {
+                    Value::Number(n) => n.as_f64().unwrap_or(-1.0),
+                    Value::String(s) => s.trim().parse::<f64>().unwrap_or(-1.0),
+                    _ => -1.0,
+                };
+                if !(0.0..=MAX_WAIT_S).contains(&secs) {
+                    return Err(self.fatal(path, t, label, format!("wait needs args.seconds between 0 and {MAX_WAIT_S}")));
+                }
+                tokio::time::sleep(Duration::from_secs_f64(secs)).await;
+                Ok(Outcome::Done(Ok(format!("waited {secs} s"))))
+            }
+            "save" => {
+                if !self.ctx.owner {
+                    return Err(self.fatal(path, t, label, "playbooks run in the owner context only".into()));
+                }
+                let (Some(p), Some(c)) = (args["path"].as_str(), args.get("content")) else { return Err(self.fatal(path, t, label, "save needs args.path and args.content".into())) };
+                Ok(Outcome::Done(crate::playbook_ext::save_note(self.ctx, p, c, args["append"].as_bool().unwrap_or(false)).await))
+            }
             "fail" => Ok(Outcome::Done(Err(args["msg"].as_str().map(str::to_string).unwrap_or_else(|| "fail".into())))),
             "assert" => {
                 let list: Vec<String> = match &args["that"] {
@@ -1442,7 +1693,21 @@ impl Runner<'_> {
                     return Err(self.fatal(path, t, label, "playbooks run in the owner context only".into()));
                 }
                 let Some(tl) = self.reg.allowed(tool, true, false) else { return Err(self.fatal(path, t, label, format!("unknown action `{tool}`"))) };
-                Ok(Outcome::Done(match tokio::time::timeout(timeout, tl.call(&args, self.ctx)).await {
+                let restricted;
+                let ctx: &ToolCtx = match &t.allow_hosts {
+                    Some(hosts) => {
+                        if let Err(e) = crate::playbook_ext::check_url(args["url"].as_str().unwrap_or(""), hosts) {
+                            return Ok(Outcome::Done(Err(e)));
+                        }
+                        restricted = match crate::playbook_ext::restricted_ctx(self.ctx, hosts) {
+                            Ok(c) => c,
+                            Err(e) => return Err(self.fatal(path, t, label, e)),
+                        };
+                        &restricted
+                    }
+                    None => self.ctx,
+                };
+                Ok(Outcome::Done(match tokio::time::timeout(timeout, tl.call(&args, ctx)).await {
                     Ok(r) => r,
                     Err(_) => Err(format!("timed out after {}s", timeout.as_secs())),
                 }))
@@ -1461,7 +1726,7 @@ pub async fn run_playbook(pb: &Playbook, run_vars: &Map<String, Value>, skip_tag
         }
         vars.insert(k.clone(), v.clone());
     }
-    let mut r = Runner { reg, ctx, asker, vars, skip_tags: skip_tags.iter().cloned().collect(), log: vec![] };
+    let mut r = Runner { reg, ctx, asker, vars, skip_tags: skip_tags.iter().cloned().collect(), log: vec![], fatal_hit: false };
     let res = r.run_tasks(&pb.tasks, "").await;
     let log = r.log;
     match res {
@@ -1548,11 +1813,11 @@ pub async fn run_named(ctx: &ToolCtx, reg: &Registry, asker: Option<&dyn Asker>,
     if !rep.ok {
         return Err(PbError::Invalid(rep.problems));
     }
-    if trigger == Trigger::Schedule {
+    if trigger != Trigger::Manual {
         match ctx.store.playbook_approval(name).await.map_err(PbError::Other)? {
             Some((s, _)) if s == sha => {}
-            Some(_) => return Err(PbError::NotApproved(format!("playbook `{name}` changed since it was approved; approve it again before it runs from a schedule"))),
-            None => return Err(PbError::NotApproved(format!("playbook `{name}` is not approved; approve it before it runs from a schedule"))),
+            Some(_) => return Err(PbError::NotApproved(format!("playbook `{name}` changed since it was approved; approve it again before it runs unattended"))),
+            None => return Err(PbError::NotApproved(format!("playbook `{name}` is not approved; approve it before it runs unattended"))),
         }
     }
     let report = run_playbook(&pb, vars, skip_tags, trigger, reg, ctx, asker).await;
