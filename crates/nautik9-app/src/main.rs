@@ -11,11 +11,14 @@ use nautik9_core::{
 };
 use nautik9_fleet::{FleetConfig, FleetModule};
 use nautik9_lemonade::{LemonadeConfig, LemonadeModule};
-use nautik9_wayfinder::{generate_fast_embedding, WayfinderModule, WayfinderVault};
+use nautik9_wayfinder::{WayfinderModule, WayfinderVault};
 
 mod agent_api;
 mod auth;
 mod device_sms;
+mod notes_api;
+mod static_assets;
+mod tls;
 
 #[derive(Parser, Debug)]
 #[command(name = "nautik9", version = "0.1.0", about = "NautiK9 Pure-Rust Survey & Organization Engine")]
@@ -84,6 +87,16 @@ enum Commands {
         /// Android app pushes its inbox to /api/sms/ingest and opens the composer itself)
         #[arg(long, value_enum, default_value = "adb")]
         sms_bridge: SmsBridge,
+        /// Serve HTTPS (rustls). Uses tls-cert.pem / tls-key.pem in the config dir, making a
+        /// self-signed pair on first run. Without this flag the server speaks plain HTTP.
+        #[arg(long)]
+        tls: bool,
+        /// Your own certificate (PEM); implies --tls and needs --tls-key
+        #[arg(long)]
+        tls_cert: Option<PathBuf>,
+        /// Private key (PEM) for --tls-cert
+        #[arg(long)]
+        tls_key: Option<PathBuf>,
     },
 }
 
@@ -247,23 +260,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Index { id, title, content, tags } => {
             println!("📥 Indexing new entry into Wayfinder vault: [{}] {}", id, title);
-            let emb = generate_fast_embedding(&format!("{} {}", title, content), hardware.recommended_embedding_dim);
-            
             let vault = WayfinderVault::new(&cli.vault_path)?;
-            vault.put_item(&id, &title, &content, &tags, Some(&emb)).await?;
+            vault.put_item(&id, &title, &content, &tags, None).await?;
 
             let index_event = NautikEvent::new(
                 "cli",
                 EventPayload::WayfinderItemIndexed { item_id: id, title, tags },
             );
             registry.dispatch_event(index_event).await?;
-            println!("✓ Successfully indexed with {}-dimensional vector embedding.", hardware.recommended_embedding_dim);
+            println!("✓ Indexed (keyword search; meaning-based search needs an embedding endpoint in agent.json).");
         }
         Commands::Interactive => {
             println!("Interactive mode: Mack is on watch. Type your request or 'exit'.");
         }
-        Commands::Serve { port, bind, fleet_url, print_token, sms_bridge } => {
-            let opts = ServeOptions { port, bind, fleet_url, print_token, config_dir, lemonade_config, sms_bridge };
+        Commands::Serve { port, bind, fleet_url, print_token, sms_bridge, tls, tls_cert, tls_key } => {
+            let tls = (tls || tls_cert.is_some() || tls_key.is_some()).then_some((tls_cert, tls_key));
+            let opts = ServeOptions { port, bind, fleet_url, print_token, config_dir, lemonade_config, sms_bridge, tls };
             serve_mobile_web(opts, registry, cli.vault_path).await?;
             return Ok(());
         }
@@ -297,6 +309,8 @@ struct ServeOptions {
     config_dir: PathBuf,
     lemonade_config: LemonadeConfig,
     sms_bridge: SmsBridge,
+    /// HTTPS: Some((cert, key)) paths, both None = the config dir's self-signed pair.
+    tls: Option<(Option<PathBuf>, Option<PathBuf>)>,
 }
 
 fn build_router(state: AppState, token: String) -> axum::Router {
@@ -310,7 +324,7 @@ fn build_router(state: AppState, token: String) -> axum::Router {
         .route("/api/search", post(handle_search))
         .route("/api/chat", post(handle_chat))
         .route("/api/decompose", post(handle_decompose))
-        .route("/api/notes", get(handle_get_notes).post(handle_save_note))
+        .route("/api/notes", post(handle_save_note))
         .route("/api/notes/{id}", axum::routing::delete(handle_delete_note))
         .route("/api/notes/{id}/backlinks", get(handle_backlinks))
         .route("/api/tags", get(handle_tags))
@@ -340,6 +354,9 @@ fn build_router(state: AppState, token: String) -> axum::Router {
         .route("/api/agent/playbooks/{name}/check", post(agent_api::playbook_check))
         .route("/api/agent/playbooks/{name}/run", post(agent_api::playbook_run))
         .route("/api/agent/playbooks/{name}/approve", post(agent_api::playbook_approve))
+        // Notes extras (search, graph, attachments) and the compiled-in static files.
+        .merge(notes_api::routes())
+        .route("/static/{*name}", get(static_assets::serve))
         .layer(axum::middleware::from_fn_with_state(
             std::sync::Arc::new(token),
             auth::require_token,
@@ -361,14 +378,13 @@ async fn apply_draft(
     lemonade: &LemonadeModule,
     cfg: &WorkModeConfig,
     vault_path: &std::path::Path,
-    embedding_dim: usize,
+    _embedding_dim: usize,
 ) {
     let is_owner = cfg.is_owner(&msg.sender);
     let vault_context = if is_owner {
         match WayfinderVault::new(vault_path) {
             Ok(v) => {
-                let q_emb = generate_fast_embedding(&msg.body, embedding_dim);
-                let hits = v.search(&msg.body, Some(&q_emb), 3).await.unwrap_or_default();
+                let hits = v.search(&msg.body, 3).await.unwrap_or_default();
                 if hits.is_empty() {
                     None
                 } else {
@@ -504,29 +520,45 @@ async fn serve_mobile_web(
     let app = build_router(state, token.clone());
 
     let addr = format!("{}:{}", opts.bind, opts.port);
+    let tls_files = match &opts.tls {
+        Some((c, k)) => {
+            let names: Vec<String> = lan_ip().into_iter().collect();
+            Some(tls::resolve_files(&opts.config_dir, c.as_deref(), k.as_deref(), &names)?)
+        }
+        None => None,
+    };
+    let scheme = if tls_files.is_some() { "https" } else { "http" };
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
     println!("=======================================================");
     println!("NautiK9 companion server listening on {}", addr);
-    println!("  Local:  http://127.0.0.1:{}", opts.port);
+    println!("  Local:  {scheme}://127.0.0.1:{}", opts.port);
     let lan = if opts.bind == "0.0.0.0" { lan_ip() } else { None };
     if let Some(ip) = &lan {
-        println!("  LAN:    http://{}:{}", ip, opts.port);
+        println!("  LAN:    {scheme}://{}:{}", ip, opts.port);
     }
     println!("  Token:  {} ({})", opts.config_dir.join("token").display(), if token_created { "created now" } else { "existing" });
     if opts.print_token || std::io::IsTerminal::is_terminal(&std::io::stdout()) {
         let host = lan.unwrap_or_else(|| "127.0.0.1".to_string());
-        println!("  Open once: http://{}:{}/?token={}", host, opts.port, token);
+        println!("  Open once: {scheme}://{}:{}/?token={}", host, opts.port, token);
     } else {
         println!("  (token URL not printed to a log; read the token file or start with --print-token)");
     }
-    if opts.bind != "127.0.0.1" && opts.bind != "localhost" {
+    if let Some(f) = &tls_files {
+        println!("  HTTPS:  certificate {} ({})", f.cert.display(), if f.generated { "self-signed, made now" } else { "existing" });
+        if f.generated || opts.tls.as_ref().is_some_and(|t| t.0.is_none()) {
+            println!("  The self-signed certificate encrypts traffic; your browser or phone must be told to trust it once.");
+        }
+    } else if opts.bind != "127.0.0.1" && opts.bind != "localhost" {
         println!("  WARNING: plain HTTP. The token and your data cross the network unencrypted.");
         println!("  Keep this on a trusted LAN or VPN; never port-forward it to the internet.");
     }
     println!("=======================================================");
 
-    axum::serve(listener, app).await?;
+    match tls_files {
+        Some(f) => tls::serve(listener.into_std()?, app, &f).await?,
+        None => axum::serve(listener, app).await?,
+    }
     Ok(())
 }
 
@@ -592,8 +624,7 @@ async fn handle_search(
 ) -> axum::Json<serde_json::Value> {
     let q = payload["query"].as_str().unwrap_or("survey");
     let vault = WayfinderVault::new(&state.vault_path).unwrap_or_else(|_| WayfinderVault::in_memory().unwrap());
-    let q_emb = generate_fast_embedding(q, state.hardware.recommended_embedding_dim);
-    let results = vault.search(q, Some(&q_emb), 10).await.unwrap_or_default();
+    let results = vault.search(q, 10).await.unwrap_or_default();
 
     {
         let reg_guard = state.registry.lock().await;
@@ -948,28 +979,8 @@ async fn handle_decompose(
     }))
 }
 
-#[derive(serde::Deserialize, Default)]
-struct NotesQuery {
-    tag: Option<String>,
-}
-
 fn open_vault(state: &AppState) -> WayfinderVault {
     WayfinderVault::new(&state.vault_path).unwrap_or_else(|_| WayfinderVault::in_memory().unwrap())
-}
-
-async fn handle_get_notes(
-    axum::extract::State(state): axum::extract::State<AppState>,
-    axum::extract::Query(q): axum::extract::Query<NotesQuery>,
-) -> axum::Json<serde_json::Value> {
-    let vault = open_vault(&state);
-    let items = match q.tag.as_deref().filter(|t| !t.is_empty()) {
-        Some(t) => vault.notes_with_tag(t).await.unwrap_or_default(),
-        None => vault.list_items().await.unwrap_or_default(),
-    };
-    axum::Json(serde_json::json!({
-        "notes": items,
-        "count": items.len()
-    }))
 }
 
 async fn handle_backlinks(
@@ -1011,8 +1022,7 @@ async fn handle_save_note(
     let links = nautik9_wayfinder::parse_links(content);
 
     let vault = open_vault(&state);
-    let emb = generate_fast_embedding(&format!("{} {}", title, content), state.hardware.recommended_embedding_dim);
-    let ok = vault.put_item(&id, title, content, &tags, Some(&emb)).await.is_ok();
+    let ok = vault.put_item(&id, title, content, &tags, None).await.is_ok();
 
     axum::Json(serde_json::json!({
         "success": ok,

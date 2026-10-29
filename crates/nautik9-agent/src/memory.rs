@@ -309,6 +309,14 @@ pub struct SyncReport {
     pub removed: usize,
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct NotesIndexReport {
+    pub notes: usize,
+    pub sync: SyncReport,
+    pub embedded: usize,
+    pub embed_error: Option<String>,
+}
+
 pub struct MemoryIndex {
     conn: Mutex<Connection>,
     embedder: Option<Embedder>,
@@ -494,6 +502,40 @@ impl MemoryIndex {
         Ok(rep)
     }
 
+    /// Chunk the vault notes whose title starts with `prefix` into the `notes` collection and embed
+    /// what is missing. Memory.md and the journal are not notes for search. With an empty prefix,
+    /// notes that no longer exist are dropped from the collection too.
+    pub async fn index_vault_notes(&self, items: &[nautik9_wayfinder::VaultItem], prefix: &str) -> Result<NotesIndexReport, String> {
+        let prefix = prefix.trim_start_matches('/');
+        let mut rep = NotesIndexReport::default();
+        let mut live: HashSet<&str> = HashSet::new();
+        for n in items.iter().filter(|n| n.title != crate::tools::MEMORY_PATH && !n.title.starts_with("Jade/Journal/")) {
+            live.insert(n.title.as_str());
+            if !n.title.trim_start_matches('/').starts_with(prefix) {
+                continue;
+            }
+            let chunks = chunk_note(&n.title, &n.content, MAX_CHUNK_CHARS);
+            let r = self.replace_source("notes", &n.title, &chunks)?;
+            (rep.sync.added, rep.sync.kept, rep.sync.removed, rep.notes) = (rep.sync.added + r.added, rep.sync.kept + r.kept, rep.sync.removed + r.removed, rep.notes + 1);
+        }
+        if prefix.is_empty() {
+            let sources: Vec<String> = {
+                let c = self.conn();
+                let mut st = db(c.prepare("SELECT DISTINCT source FROM chunks WHERE collection = 'notes'"))?;
+                let rows = db(st.query_map([], |r| r.get::<_, String>(0)))?;
+                rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?
+            };
+            for s in sources.iter().filter(|s| !live.contains(s.as_str())) {
+                rep.sync.removed += self.remove(None, Some(s), Some("notes"))?;
+            }
+        }
+        match self.embed_pending().await {
+            Ok(n) => rep.embedded = n,
+            Err(e) => rep.embed_error = Some(e),
+        }
+        Ok(rep)
+    }
+
     /// Delete by id, by source (optionally within a collection) or a whole collection.
     pub fn remove(&self, id: Option<i64>, source: Option<&str>, collection: Option<&str>) -> Result<usize, String> {
         let ids: Vec<i64> = {
@@ -667,20 +709,10 @@ pub async fn run_action(ctx: &ToolCtx, a: &Value) -> Result<Value, String> {
             m.add(coll.trim(), a["source"].as_str().unwrap_or(""), a["head"].as_str().unwrap_or(""), &texts).await
         }
         "index" => {
-            let prefix = a["path"].as_str().unwrap_or("").trim_start_matches('/');
             let items = ctx.vault.list_items().await.map_err(|e| e.to_string())?;
-            let (mut notes, mut tot) = (0, SyncReport::default());
-            for n in items.iter().filter(|n| n.title.trim_start_matches('/').starts_with(prefix) && n.title != crate::tools::MEMORY_PATH && !n.title.starts_with("Jade/Journal/")) {
-                let chunks = chunk_note(&n.title, &n.content, MAX_CHUNK_CHARS);
-                let r = m.replace_source("notes", &n.title, &chunks)?;
-                (tot.added, tot.kept, tot.removed, notes) = (tot.added + r.added, tot.kept + r.kept, tot.removed + r.removed, notes + 1);
-            }
-            let (embedded, error) = match m.embed_pending().await {
-                Ok(n) => (n, None),
-                Err(e) => (0, Some(e)),
-            };
-            Ok(json!({"notes": notes, "chunks_added": tot.added, "chunks_kept": tot.kept, "chunks_removed": tot.removed, "embedded": embedded,
-                      "semantic": if m.semantic_on() { "on" } else { "off: keyword only" }, "embed_error": error}))
+            let r = m.index_vault_notes(&items, a["path"].as_str().unwrap_or("")).await?;
+            Ok(json!({"notes": r.notes, "chunks_added": r.sync.added, "chunks_kept": r.sync.kept, "chunks_removed": r.sync.removed, "embedded": r.embedded,
+                      "semantic": if m.semantic_on() { "on" } else { "off: keyword only" }, "embed_error": r.embed_error}))
         }
         "remove" => {
             let n = m.remove(a["id"].as_i64(), a["source"].as_str(), a["collection"].as_str())?;
