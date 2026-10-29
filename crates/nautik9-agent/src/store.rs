@@ -30,6 +30,15 @@ pub struct StoredMessage {
     pub rating: Option<i64>,
 }
 
+/// One chat's user and assistant text from a given day (for the journal).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DayChat {
+    pub id: String,
+    pub title: String,
+    /// (role, text) of the messages stored on that day, in order; tool traffic left out.
+    pub messages: Vec<(String, String)>,
+}
+
 #[derive(Clone)]
 pub struct Store {
     conn: Arc<Mutex<Connection>>,
@@ -201,6 +210,34 @@ impl Store {
                     break;
                 }
             }
+        }
+        Ok(out)
+    }
+
+    /// Chats that have messages stored on `date` (YYYY-MM-DD, local time), oldest chat first.
+    pub async fn day_chats(&self, date: &str) -> Result<Vec<DayChat>, String> {
+        let c = self.conn.lock().await;
+        let mut st = c
+            .prepare(
+                "SELECT m.session_id, s.title, m.json FROM messages m JOIN sessions s ON s.id = m.session_id
+                 WHERE m.created_at LIKE ?1 ORDER BY s.created_at, m.session_id, m.idx",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = st
+            .query_map(params![format!("{date}%")], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
+            .map_err(|e| e.to_string())?;
+        let mut out: Vec<DayChat> = Vec::new();
+        for row in rows {
+            let (sid, title, json) = row.map_err(|e| e.to_string())?;
+            let m: serde_json::Value = serde_json::from_str(&json).unwrap_or_default();
+            let (role, text) = (m["role"].as_str().unwrap_or(""), m["content"].as_str().unwrap_or("").trim());
+            if (role != "user" && role != "assistant") || text.is_empty() {
+                continue;
+            }
+            if out.last().map(|c| c.id != sid).unwrap_or(true) {
+                out.push(DayChat { id: sid, title, messages: vec![] });
+            }
+            out.last_mut().unwrap().messages.push((role.to_string(), text.to_string()));
         }
         Ok(out)
     }

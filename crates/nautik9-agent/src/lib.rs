@@ -8,10 +8,14 @@
 //! - [`store`]: chat sessions and the trajectory log (SQLite + JSONL).
 //! - [`tools`]: the tool registry and the tools (notes, memory, web, http, chat history, skills).
 //! - [`agent`]: steering, context guard and the tool-calling loop (with `delegate`).
+//! - [`memory`]: embeddings client, SQLite vector/FTS5 index, hybrid search, the `embeddings` tool.
+//! - [`journal`]: daily notes that summarise earlier chats.
 //! - [`html2md`]: page HTML to Markdown for `web_fetch`.
 
 pub mod agent;
 pub mod html2md;
+pub mod journal;
+pub mod memory;
 pub mod store;
 pub mod tools;
 

@@ -3,7 +3,7 @@
 //! System prompt (owner): the base introduction (or `Jade/SYSTEM.md` instead of it), the
 //! persona `Jade/SOUL.md`, standing instructions `AGENTS.md` + `Jade/AGENTS.md`, the memory
 //! bullets from `Jade/Memory.md` (all of them up to `memory_k`, else the ones sharing most words
-//! with the last user message), the skill list, and the local date, time and time zone. HTML
+//! with the last two user messages, or ranked by hybrid search when an embedding endpoint is configured), the skill list, and the local date, time and time zone. HTML
 //! comments in steering text are removed. Other callers get the base text and SOUL only: no
 //! memory, no notes, no tools.
 //!
@@ -160,6 +160,29 @@ impl Agent {
         note_by_path(&self.ctx.vault, path).await.ok().flatten().map(|n| strip_html_comments(&n.content).trim().to_string()).unwrap_or_default()
     }
 
+    /// The `memory_k` bullets to show when there are more: hybrid (keywords + meaning) search on
+    /// the recent user messages when an embedding endpoint is configured, else (or if that finds
+    /// nothing) the word-overlap ranking.
+    async fn rank_memory(&self, note: &str, bullets: &[String], query: &str) -> Vec<String> {
+        let k = self.cfg.memory_k;
+        let m = &self.ctx.memory;
+        if m.semantic_on() {
+            if m.sync_memory(note, bullets).await.is_err() {
+                // Endpoint down: the bullets are still synced and keyword search still works.
+            }
+            if let Ok(out) = m.search(query, "hybrid", &["memory".to_string()], k).await {
+                let picked: Vec<String> = out.hits.into_iter().map(|h| h.text).collect();
+                if !picked.is_empty() {
+                    return picked;
+                }
+            }
+        }
+        let words: Vec<String> = query.split_whitespace().filter(|w| w.len() > 2).map(|w| w.to_lowercase()).collect();
+        let mut scored: Vec<(usize, &String)> = bullets.iter().map(|b| (words.iter().filter(|w| b.to_lowercase().contains(w.as_str())).count(), b)).collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored.into_iter().take(k).map(|(_, b)| b.clone()).collect()
+    }
+
     /// The system prompt for this caller (see the module doc).
     pub async fn system_prompt(&self, owner: bool, last_user: &str) -> String {
         let system_md = self.note_text("Jade/SYSTEM.md").await;
@@ -175,16 +198,10 @@ impl Agent {
                     p.push_str(&format!("\n\n## Standing instructions ({path})\n{a}"));
                 }
             }
-            let bullets = memory_bullets(&self.note_text(MEMORY_PATH).await);
+            let memory_text = self.note_text(MEMORY_PATH).await;
+            let bullets = memory_bullets(&memory_text);
             if !bullets.is_empty() {
-                let picked: Vec<&String> = if bullets.len() <= self.cfg.memory_k {
-                    bullets.iter().collect()
-                } else {
-                    let words: Vec<String> = last_user.split_whitespace().filter(|w| w.len() > 2).map(|w| w.to_lowercase()).collect();
-                    let mut scored: Vec<(usize, &String)> = bullets.iter().map(|b| (words.iter().filter(|w| b.to_lowercase().contains(w.as_str())).count(), b)).collect();
-                    scored.sort_by(|a, b| b.0.cmp(&a.0));
-                    scored.into_iter().take(self.cfg.memory_k).map(|(_, b)| b).collect()
-                };
+                let picked: Vec<String> = if bullets.len() <= self.cfg.memory_k { bullets.clone() } else { self.rank_memory(&memory_text, &bullets, last_user).await };
                 p.push_str("\n\n## What you remember about the user (Jade/Memory.md)\n");
                 p.push_str(&picked.iter().map(|b| format!("- {b}")).collect::<Vec<_>>().join("\n"));
             }
@@ -319,7 +336,13 @@ impl Agent {
         let before = history.len();
         let stamp = chrono::Local::now().format("%Y-%m-%d %H:%M");
         history.push(json!({"role":"user","content": format!("[{stamp}] {user_text}")}));
-        let system = json!({"role":"system","content": self.system_prompt(owner, user_text).await});
+        // Memory ranking looks at the last two user messages (the one before this turn's, then this one).
+        let prev_user = history[..before].iter().rev().find(|m| m["role"] == "user").and_then(|m| m["content"].as_str()).map(|t| if t.starts_with('[') { t.split_once("] ").map(|x| x.1).unwrap_or(t) } else { t }.to_string());
+        let query = match prev_user {
+            Some(p) => format!("{p}\n{user_text}"),
+            None => user_text.to_string(),
+        };
+        let system = json!({"role":"system","content": self.system_prompt(owner, &query).await});
         let out = self.run_loop(&system, &mut history, owner, false, self.cfg.max_steps).await;
         // Persist what happened, even when the model failed after some tool calls.
         let first_idx = store.append(&sid, &history[before..]).await.map_err(err)?;

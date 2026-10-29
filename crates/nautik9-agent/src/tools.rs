@@ -32,6 +32,8 @@ pub struct ToolCtx {
     pub owner: bool,
     /// Local MCP tool name -> its server (what this server's /api/agent/mcp proxy forwards to).
     pub mcp_local: Arc<HashMap<String, McpServer>>,
+    /// Hybrid search index and optional embedding client (see `memory`).
+    pub memory: Arc<crate::memory::MemoryIndex>,
 }
 
 #[async_trait]
@@ -92,6 +94,7 @@ impl Registry {
             Arc::new(HttpRequest),
             Arc::new(ChatHistory),
             Arc::new(SkillTool),
+            Arc::new(crate::memory::EmbeddingsTool),
         ];
         Registry { tools }
     }
@@ -821,6 +824,7 @@ mod tests {
             search: Arc::new(vec![]),
             owner: true,
             mcp_local: Arc::new(HashMap::new()),
+            memory: Arc::new(crate::memory::MemoryIndex::in_memory(None).unwrap()),
         }
     }
 

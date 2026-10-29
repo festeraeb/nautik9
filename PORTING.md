@@ -18,8 +18,8 @@ NautiK9 follows the design of **Jade Vault** (MIT, lucky-edgelord/jade-vault; v2
 | `[[links]]`, aliases `[[A\|label]]`, `[[A#heading]]` | done | parsed from content; code spans and fences ignored |
 | Backlinks, unresolved (missing) links | done | `GET /api/notes/{id}/backlinks`; matched by title or id |
 | `#tags`, nested tags (`#a/b`), tag filter | done | `GET /api/tags`, `GET /api/notes?tag=`; parent tag finds nested |
-| Note search | partial | keyword search only. The vector part is a character-hash fingerprint, not semantic |
-| Semantic search / embeddings | planned | via an OpenAI-compatible `/embeddings` endpoint (embeddinggemma) |
+| Note search | partial | `GET /api/notes` search is still keyword only (its vector part is a character-hash fingerprint, not semantic). Meaning-based search is the agent's `embeddings` tool below |
+| Hybrid memory search + `embeddings` tool | done (needs an endpoint you configure) | `nautik9-agent` `memory.rs`: any OpenAI-compatible `/v1/embeddings` endpoint set in `agent.json` `embeddings: {url, model, api_key_env?}`; without it semantic is OFF and every report says "keyword only" (no fake vectors). SQLite index `vectors.db` (`index_path`): chunks + FTS5 bm25 (porter) + f32 BLOB vectors, brute-force cosine in Rust (no sqlite-vec), reciprocal rank fusion k=60, modes hybrid/semantic/keyword. Collections `memory`, `journal`, `notes` (index action) and any name. Actions search/add/index/remove/compare/status, owner only; `POST /api/agent/embeddings`. Unlike Jade: no automatic re-index a few seconds after a note changes (memory resyncs when the prompt is built, notes on `index`); no `nomic` query prefixes; an embedding-model change drops the stored vectors and re-embeds on the next index/sync. Checked live against a local embeddinggemma 768-D server on 10 test notes |
 | Graph view, KaTeX, `![[image]]`, embeds, split editor | not planned | |
 | Token-protected API, health open | done | bearer or `?token=`, constant-time compare, token file mode 0600 |
 | Plain-HTTP warning, LAN-only guidance | done | printed on start; `--bind 127.0.0.1` for local only |
@@ -34,7 +34,8 @@ NautiK9 follows the design of **Jade Vault** (MIT, lucky-edgelord/jade-vault; v2
 | Secretary inbox (messages for the owner) | partial | Work SMS list with drafts you approve; not a general inbox |
 | Messenger bridges (Vector, Discord) | not planned | the phone SMS bridge over adb is the equivalent here |
 | Agent tools | partial | notes search/read/list/write/edit, memory, web_search (SearXNG, a home server, DuckDuckGo), web_fetch (HTML to Markdown), http_request, chat_history, skill, delegate, and every tool of configured MCP servers (the CESARops fleet MCP; a phone reaches it through its home server). No local shell/node/Python sandbox |
-| Memory, SOUL/AGENTS/SYSTEM steering, skills | done | `Jade/Memory.md` bullets (keyword-ranked when long), `Jade/SOUL.md`, `AGENTS.md` + `Jade/AGENTS.md`, `Jade/SYSTEM.md`, `Jade/skills/<name>/SKILL.md`. Journal and embedding-ranked memory not yet |
+| Memory, SOUL/AGENTS/SYSTEM steering, skills | done | `Jade/Memory.md` bullets (keyword-ranked when long), `Jade/SOUL.md`, `AGENTS.md` + `Jade/AGENTS.md`, `Jade/SYSTEM.md`, `Jade/skills/<name>/SKILL.md`. With an embedding endpoint a long Memory.md is ranked by hybrid search on the last two user messages (`memory_k`, default 8); without one, by shared words. The `memory` tool's own `search` action is still plain keyword |
+| Journal | done (model-assisted) | `POST /api/agent/journal {date?}` (default yesterday): one model summary per chat from the stored user/assistant messages into `Jade/Journal/YYYY-MM-DD.md` (with session ids), linked from `Jade/Journal.md`, entries also in the `journal` search collection. No model answering = nothing written, error returned. Not a model-facing tool and no automatic nightly run (no scheduler); a summary is the model's, not a transcript |
 | Schedules, crontab, heartbeat | not planned | |
 | Flows (n8n-style automations) | not planned | |
 | Scripting (`jade.*`), note scripts, templates | not planned | |

@@ -36,7 +36,7 @@ fn agent(base: &str, vault: Arc<WayfinderVault>, store: Store, cfg: AgentConfig)
         timeout_seconds: 10,
         max_tokens: 256,
     });
-    let ctx = ToolCtx { vault, store, http: reqwest::Client::new(), secrets: Arc::new(Default::default()), search: Arc::new(vec![]), owner: true, mcp_local: Arc::new(Default::default()) };
+    let ctx = ToolCtx { vault, store, http: reqwest::Client::new(), secrets: Arc::new(Default::default()), search: Arc::new(vec![]), owner: true, mcp_local: Arc::new(Default::default()), memory: Arc::new(nautik9_agent::memory::MemoryIndex::in_memory(None).unwrap()) };
     Agent::new(Arc::new(llm), ctx, cfg)
 }
 
