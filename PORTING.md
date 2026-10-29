@@ -35,8 +35,9 @@ NautiK9 follows the design of **Jade Vault** (MIT, lucky-edgelord/jade-vault; v2
 | Messenger bridges (Vector, Discord) | not planned | the phone SMS bridge over adb is the equivalent here |
 | Agent tools | partial | notes search/read/list/write/edit, memory, web_search (SearXNG, a home server, DuckDuckGo), web_fetch (HTML to Markdown), http_request, chat_history, skill, delegate, and every tool of configured MCP servers (the CESARops fleet MCP; a phone reaches it through its home server). No local shell/node/Python sandbox |
 | Memory, SOUL/AGENTS/SYSTEM steering, skills | done | `Jade/Memory.md` bullets (keyword-ranked when long), `Jade/SOUL.md`, `AGENTS.md` + `Jade/AGENTS.md`, `Jade/SYSTEM.md`, `Jade/skills/<name>/SKILL.md`. Journal and embedding-ranked memory not yet |
-| Schedules, crontab, heartbeat | not planned | |
-| Flows (n8n-style automations) | not planned | |
+| Schedules, crontab, heartbeat | not planned | the playbook approval gate exists for when schedules arrive |
+| Flows (n8n-style automations) | not planned | Playbooks (next row) cover the deterministic part; there is no flow editor or trigger graph |
+| Playbooks (deterministic JSON automations) | partial | `nautik9-agent` `playbook.rs`: notes `Jade/Playbooks/<name>.json`; tasks `do` = any tool, or `set`, `fail`, `assert`, `ask`, `block`; `when`, `loop` (cap 200), `register`, `ignore_errors`, `timeout_s`, `tags`/`skip_tags`; safe expression language and `{{ }}` templates (undeclared name = error; regex on a linear-time engine with size caps); approval = SHA-256 of the JSON in the sessions DB, a changed file needs re-approval, only approved playbooks run with trigger `schedule`; `playbook` tool and `/api/agent/playbooks*`. Not done: `retries/until`, `failed_when`, `rescue/always`, `loop_var`, `debug/wait/save`, browser actions, `allow_hosts`, a Playbooks tab in the UI, and no scheduler calls it yet (schedules are not ported); Jade's playbooks forbid model calls, here `ask` is allowed |
 | Scripting (`jade.*`), note scripts, templates | not planned | |
 | Trajectory log / fine-tuning export | done | every model call in `trajectories.jsonl`; `/api/agent/export?format=openai\|sharegpt&rated=up` |
 | Webxdc mini apps | not planned | |

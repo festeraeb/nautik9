@@ -58,10 +58,43 @@ impl Store {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS messages (session_id TEXT NOT NULL, idx INTEGER NOT NULL, json TEXT NOT NULL, created_at TEXT NOT NULL,
-                 rating INTEGER, PRIMARY KEY (session_id, idx));",
+                 rating INTEGER, PRIMARY KEY (session_id, idx));
+             CREATE TABLE IF NOT EXISTS playbook_approvals (name TEXT PRIMARY KEY, sha256 TEXT NOT NULL, approved_at TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS playbook_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, trigger TEXT NOT NULL, ok INTEGER NOT NULL, report TEXT NOT NULL, at TEXT NOT NULL);",
         )
         .map_err(|e| e.to_string())?;
         Ok(Store { conn: Arc::new(Mutex::new(conn)), traj_path })
+    }
+
+    /// Record approval of a playbook: the SHA-256 of its JSON at the time.
+    pub async fn approve_playbook(&self, name: &str, sha256: &str) -> Result<(), String> {
+        let c = self.conn.lock().await;
+        c.execute("INSERT INTO playbook_approvals (name, sha256, approved_at) VALUES (?1, ?2, ?3) ON CONFLICT(name) DO UPDATE SET sha256 = excluded.sha256, approved_at = excluded.approved_at", params![name, sha256, now()])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// (sha256, approved_at) of the last approval of a playbook.
+    pub async fn playbook_approval(&self, name: &str) -> Result<Option<(String, String)>, String> {
+        let c = self.conn.lock().await;
+        c.query_row("SELECT sha256, approved_at FROM playbook_approvals WHERE name = ?1", params![name], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn log_playbook_run(&self, name: &str, trigger: &str, ok: bool, report: &serde_json::Value) -> Result<(), String> {
+        let c = self.conn.lock().await;
+        c.execute("INSERT INTO playbook_runs (name, trigger, ok, report, at) VALUES (?1, ?2, ?3, ?4, ?5)", params![name, trigger, ok as i64, report.to_string(), now()])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// (at, trigger, ok) of the last run of a playbook.
+    pub async fn last_playbook_run(&self, name: &str) -> Result<Option<(String, String, bool)>, String> {
+        let c = self.conn.lock().await;
+        c.query_row("SELECT at, trigger, ok FROM playbook_runs WHERE name = ?1 ORDER BY id DESC LIMIT 1", params![name], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0)))
+            .optional()
+            .map_err(|e| e.to_string())
     }
 
     pub async fn create_session(&self, title: &str) -> Result<String, String> {

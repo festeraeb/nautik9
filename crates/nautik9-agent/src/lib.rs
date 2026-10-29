@@ -8,10 +8,12 @@
 //! - [`store`]: chat sessions and the trajectory log (SQLite + JSONL).
 //! - [`tools`]: the tool registry and the tools (notes, memory, web, http, chat history, skills).
 //! - [`agent`]: steering, context guard and the tool-calling loop (with `delegate`).
+//! - [`playbook`]: Jade-style Playbooks (deterministic JSON task lists run through the tools).
 //! - [`html2md`]: page HTML to Markdown for `web_fetch`.
 
 pub mod agent;
 pub mod html2md;
+pub mod playbook;
 pub mod store;
 pub mod tools;
 
