@@ -15,6 +15,7 @@ import android.webkit.WebViewClient;
 public class MainActivity extends Activity {
     private static final String HOME = "http://127.0.0.1:" + Engines.SERVER_PORT;
     private WebView web;
+    private Bridge bridge;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -28,7 +29,9 @@ public class MainActivity extends Activity {
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
         s.setAllowFileAccess(false);
-        web.addJavascriptInterface(new Bridge(this, Engines.get(this)), "NautiK9Android");
+        bridge = new Bridge(this, Engines.get(this));
+        bridge.attach(web);
+        web.addJavascriptInterface(bridge, "NautiK9Android");
         web.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
@@ -71,6 +74,12 @@ public class MainActivity extends Activity {
 
     @Override
     public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
+        if (code == 2) {
+            boolean granted = false;
+            for (int r : results) granted |= r == PackageManager.PERMISSION_GRANTED;
+            if (bridge != null) bridge.onLocationPermission(granted);
+            return;
+        }
         // Re-read the inbox now that the permission answer is in.
         if (web != null) web.evaluateJavascript("typeof loadSmsInbox==='function'&&loadSmsInbox(true)", null);
     }

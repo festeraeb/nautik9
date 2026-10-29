@@ -1,12 +1,24 @@
 package com.festeraeb.nautik9;
 
+import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
+import android.hardware.camera2.CameraCharacteristics;
+import android.hardware.camera2.CameraManager;
+import android.location.Location;
+import android.location.LocationManager;
 import android.net.Uri;
+import android.os.BatteryManager;
+import android.os.Build;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+import android.os.VibratorManager;
 import android.provider.Telephony;
 import android.webkit.JavascriptInterface;
+import android.webkit.WebView;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -22,9 +34,134 @@ final class Bridge {
     private final Context ctx;
     private final Engines engines;
 
+    private WebView web;
+    private boolean torchOn = false;
+
     Bridge(Context ctx, Engines engines) {
         this.ctx = ctx;
         this.engines = engines;
+    }
+
+    void attach(WebView web) {
+        this.web = web;
+    }
+
+    /** Vibrate with a pattern of on/off milliseconds ("60,40,60"). {"ok":true} or {"error":...}. */
+    @JavascriptInterface
+    public String vibrate(String pattern) {
+        try {
+            String[] parts = pattern.split(",");
+            long[] ms = new long[parts.length + 1];
+            for (int i = 0; i < parts.length; i++) ms[i + 1] = Math.max(0, Math.min(2000, Long.parseLong(parts[i].trim())));
+            Vibrator v = Build.VERSION.SDK_INT >= 31
+                    ? ((VibratorManager) ctx.getSystemService(Context.VIBRATOR_MANAGER_SERVICE)).getDefaultVibrator()
+                    : (Vibrator) ctx.getSystemService(Context.VIBRATOR_SERVICE);
+            if (v == null || !v.hasVibrator()) return error("this phone reports no vibrator");
+            v.vibrate(VibrationEffect.createWaveform(ms, -1));
+            return "{\"ok\":true}";
+        } catch (RuntimeException e) {
+            return error(e.toString());
+        }
+    }
+
+    /** Turn the back camera's flash on or off. {"ok":true,"on":bool} or {"error":...}. */
+    @JavascriptInterface
+    public String torch(boolean on) {
+        try {
+            CameraManager cm = (CameraManager) ctx.getSystemService(Context.CAMERA_SERVICE);
+            for (String id : cm.getCameraIdList()) {
+                CameraCharacteristics c = cm.getCameraCharacteristics(id);
+                Boolean flash = c.get(CameraCharacteristics.FLASH_INFO_AVAILABLE);
+                Integer facing = c.get(CameraCharacteristics.LENS_FACING);
+                if (Boolean.TRUE.equals(flash) && facing != null && facing == CameraCharacteristics.LENS_FACING_BACK) {
+                    cm.setTorchMode(id, on);
+                    torchOn = on;
+                    return new JSONObject().put("ok", true).put("on", on).toString();
+                }
+            }
+            return error("no back camera with a flash was found");
+        } catch (Exception e) {
+            return error(e.toString());
+        }
+    }
+
+    @JavascriptInterface
+    public boolean torchState() {
+        return torchOn;
+    }
+
+    /** {"level":0-100,"charging":bool,"temp_c":x} from the system battery broadcast. */
+    @JavascriptInterface
+    public String battery() {
+        try {
+            Intent b = ctx.registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+            if (b == null) return error("no battery broadcast");
+            int level = b.getIntExtra(BatteryManager.EXTRA_LEVEL, -1), scale = b.getIntExtra(BatteryManager.EXTRA_SCALE, 100);
+            int status = b.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+            boolean charging = status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL;
+            return new JSONObject().put("level", level < 0 ? JSONObject.NULL : Math.round(100f * level / scale))
+                    .put("charging", charging).put("temp_c", b.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10.0).toString();
+        } catch (Exception e) {
+            return error(e.toString());
+        }
+    }
+
+    /**
+     * Ask for one GPS fix. The answer arrives later as window.n9OnLocation({lat, lon, accuracy_m,
+     * altitude_m, provider, time_ms}) or ({error}). Asks for the location permission first if needed.
+     */
+    @JavascriptInterface
+    public void requestLocation() {
+        if (ctx.checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            ((Activity) ctx).runOnUiThread(() -> ((Activity) ctx).requestPermissions(new String[] {
+                    android.Manifest.permission.ACCESS_FINE_LOCATION, android.Manifest.permission.ACCESS_COARSE_LOCATION}, 2));
+            return;
+        }
+        fetchLocation();
+    }
+
+    /** Called by the activity when the location permission answer comes back. */
+    void onLocationPermission(boolean granted) {
+        if (granted) fetchLocation();
+        else sendLocation(error("location permission was refused"));
+    }
+
+    private void fetchLocation() {
+        try {
+            LocationManager lm = (LocationManager) ctx.getSystemService(Context.LOCATION_SERVICE);
+            if (!lm.isLocationEnabled()) {
+                sendLocation(error("location is switched off on the phone"));
+                return;
+            }
+            String provider = lm.isProviderEnabled(LocationManager.GPS_PROVIDER) ? LocationManager.GPS_PROVIDER : LocationManager.NETWORK_PROVIDER;
+            if (Build.VERSION.SDK_INT >= 30) {
+                lm.getCurrentLocation(provider, null, ctx.getMainExecutor(), loc -> sendLocation(describe(loc, provider)));
+            } else {
+                Location last = lm.getLastKnownLocation(provider);
+                sendLocation(last == null ? error("no fix yet (Android 10 path uses the last known location)") : describe(last, provider));
+            }
+        } catch (SecurityException e) {
+            sendLocation(error("location permission was refused"));
+        } catch (RuntimeException e) {
+            sendLocation(error(e.toString()));
+        }
+    }
+
+    private static String describe(Location loc, String provider) {
+        if (loc == null) return error("no fix: the " + provider + " provider gave no location in time");
+        try {
+            return new JSONObject().put("lat", loc.getLatitude()).put("lon", loc.getLongitude())
+                    .put("accuracy_m", loc.hasAccuracy() ? loc.getAccuracy() : JSONObject.NULL)
+                    .put("altitude_m", loc.hasAltitude() ? loc.getAltitude() : JSONObject.NULL)
+                    .put("provider", provider).put("time_ms", loc.getTime()).toString();
+        } catch (JSONException e) {
+            return error(e.toString());
+        }
+    }
+
+    private void sendLocation(String json) {
+        if (web == null) return;
+        web.post(() -> web.evaluateJavascript("window.n9OnLocation&&window.n9OnLocation(" + json + ")", null));
     }
 
     /** Newest inbox rows as a JSON array of {id, sender, body, date_ms}, or {"error": ...}. */

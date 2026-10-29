@@ -8,6 +8,11 @@
     <!-- Read the inbox for Work SMS drafts. Nothing is ever sent by the app: replies
          open in the phone's own composer and you press send. -->
     <uses-permission android:name="android.permission.READ_SMS" />
+    <!-- Haptic pulse button. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- GPS button only: asked for the first time you press it. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <application
         android:label="NautiK9"

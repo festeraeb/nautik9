@@ -475,16 +475,36 @@ pub async fn search_once(b: &SearchBackend, http: &reqwest::Client, q: &str, k: 
     }
 }
 
+/// The URLs in `search_once` rows (`  https://...` lines), in order.
+pub fn result_urls(rows: &str) -> Vec<String> {
+    rows.lines().map(str::trim).filter(|l| l.starts_with("http://") || l.starts_with("https://")).map(str::to_string).collect()
+}
+
+/// Open the first `n` result pages at once (8 s each) and return their text, so a small model
+/// answers from the page and not from a title. A page that fails says why; it is never skipped silently.
+async fn read_top_pages(http: &reqwest::Client, rows: &str, n: usize) -> String {
+    let urls: Vec<String> = result_urls(rows).into_iter().take(n).collect();
+    let pages = futures_util::future::join_all(urls.iter().map(|u| async move {
+        match tokio::time::timeout(std::time::Duration::from_secs(8), fetch_markdown(http, u, 3000)).await {
+            Ok(Ok(md)) => md,
+            Ok(Err(e)) => format!("URL: {u}\n(could not read: {e})"),
+            Err(_) => format!("URL: {u}\n(could not read: timed out after 8 s)"),
+        }
+    }))
+    .await;
+    pages.iter().enumerate().map(|(i, p)| format!("\n\n--- page {} ---\n{p}", i + 1)).collect()
+}
+
 #[async_trait]
 impl Tool for WebSearch {
     fn name(&self) -> &str {
         "web_search"
     }
     fn description(&self) -> &str {
-        "Search the web. Returns titles, URLs and snippets; use web_fetch to read a page."
+        "Search the web. Returns titles, URLs and snippets, plus the text of the top `read` pages (default 2, 0 for links only). Answer from that page text and cite the URL; use web_fetch for other pages."
     }
     fn parameters(&self) -> Value {
-        json!({"type":"object","properties":{"query":{"type":"string"},"k":{"type":"integer"}},"required":["query"]})
+        json!({"type":"object","properties":{"query":{"type":"string"},"k":{"type":"integer"},"read":{"type":"integer","description":"how many top results to open and include (0-4, default 2)"}},"required":["query"]})
     }
     fn parallel(&self) -> bool {
         true
@@ -498,10 +518,15 @@ impl Tool for WebSearch {
         if c.search.is_empty() {
             return Err("no web search backend is configured".into());
         }
+        let read = a["read"].as_u64().unwrap_or(2).min(4) as usize;
         let mut tried = Vec::new();
         for b in c.search.iter() {
             match search_once(b, &c.http, q, k).await {
-                Ok(text) => return Ok(format!("(results from {})\n{text}", b.label())),
+                Ok(text) => {
+                    let mut out = format!("(results from {})\n{text}", b.label());
+                    out.push_str(&read_top_pages(&c.http, &text, read).await);
+                    return Ok(out);
+                }
                 Err(e) => tried.push(format!("{}: {e}", b.label())),
             }
         }
@@ -529,31 +554,36 @@ impl Tool for WebFetch {
     }
     async fn call(&self, a: &Value, c: &ToolCtx) -> Result<String, String> {
         let url = s(a, "url")?;
-        if !(url.starts_with("http://") || url.starts_with("https://")) {
-            return Err("url must start with http:// or https://".into());
-        }
         let max = a["max_chars"].as_u64().unwrap_or(12000).clamp(500, 100_000) as usize;
-        let resp = c.http.get(url).header("User-Agent", "NautiK9/0.1 (+web_fetch)").send().await.map_err(|e| format!("fetch failed: {e}"))?;
-        let status = resp.status();
-        let final_url = resp.url().to_string();
-        let ctype = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
-        let body = resp.text().await.map_err(|e| format!("read failed: {e}"))?;
-        if !status.is_success() {
-            return Err(format!("HTTP {} from {}", status.as_u16(), final_url));
-        }
-        let (title, md) = if ctype.contains("html") || body.trim_start().starts_with('<') { html_to_markdown(&body, &final_url) } else { (None, body) };
-        let mut out = format!("URL: {final_url}\n");
-        if let Some(t) = title {
-            out.push_str(&format!("Title: {t}\n"));
-        }
-        out.push('\n');
-        let truncated = md.chars().count() > max;
-        out.extend(md.chars().take(max));
-        if truncated {
-            out.push_str(&format!("\n\n[truncated at {max} characters]"));
-        }
-        Ok(out)
+        fetch_markdown(&c.http, url, max).await
     }
+}
+
+/// Fetch a page and return it as Markdown with its URL and title, cut at `max` characters.
+pub async fn fetch_markdown(http: &reqwest::Client, url: &str, max: usize) -> Result<String, String> {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("url must start with http:// or https://".into());
+    }
+    let resp = http.get(url).header("User-Agent", "NautiK9/0.1 (+web_fetch)").send().await.map_err(|e| format!("fetch failed: {e}"))?;
+    let status = resp.status();
+    let final_url = resp.url().to_string();
+    let ctype = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let body = resp.text().await.map_err(|e| format!("read failed: {e}"))?;
+    if !status.is_success() {
+        return Err(format!("HTTP {} from {}", status.as_u16(), final_url));
+    }
+    let (title, md) = if ctype.contains("html") || body.trim_start().starts_with('<') { html_to_markdown(&body, &final_url) } else { (None, body) };
+    let mut out = format!("URL: {final_url}\n");
+    if let Some(t) = title {
+        out.push_str(&format!("Title: {t}\n"));
+    }
+    out.push('\n');
+    let truncated = md.chars().count() > max;
+    out.extend(md.chars().take(max));
+    if truncated {
+        out.push_str(&format!("\n\n[truncated at {max} characters]"));
+    }
+    Ok(out)
 }
 
 // ── http_request with {{NAME}} secrets ──────────────────────────────────────
@@ -889,6 +919,29 @@ mod tests {
         assert!(e.starts_with("web search failed on every backend: searxng http://127.0.0.1:9:"), "{e}");
         c.search = Arc::new(vec![]);
         assert!(t.call(&json!({"query":"x"}), &c).await.unwrap_err().contains("no web search backend"));
+    }
+
+    #[tokio::test]
+    async fn search_opens_the_top_pages_and_reports_a_page_it_could_not_read() {
+        // A local SearXNG-shaped endpoint whose results point at a local page and a dead port.
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", l.local_addr().unwrap());
+        let page = format!("{base}/wreck");
+        let results = json!({"results":[
+            {"title":"Cedarville","url":page,"content":"snippet only"},
+            {"title":"Dead","url":"http://127.0.0.1:9/x","content":""}]});
+        let app = axum::Router::new()
+            .route("/search", axum::routing::get(move || { let r = results.clone(); async move { axum::Json(r) } }))
+            .route("/wreck", axum::routing::get(|| async { axum::response::Html("<html><head><title>SS Cedarville</title></head><body><p>She sank on 7 May 1965 in the Straits of Mackinac.</p></body></html>") }));
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        let mut c = ctx(WayfinderVault::in_memory().unwrap(), &[]);
+        c.search = Arc::new(vec![SearchBackend::Searx(base)]);
+        let t = Registry::standard().get("web_search").unwrap();
+        let out = t.call(&json!({"query":"cedarville"}), &c).await.unwrap();
+        assert!(out.contains("--- page 1 ---") && out.contains("She sank on 7 May 1965"), "{out}");
+        assert!(out.contains("--- page 2 ---") && out.contains("could not read"), "{out}");
+        let links = t.call(&json!({"query":"cedarville","read":0}), &c).await.unwrap();
+        assert!(!links.contains("--- page"), "{links}");
     }
 
     #[test]

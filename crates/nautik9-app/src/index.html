@@ -926,11 +926,11 @@
             <div class="cockpit-meta">
                 <div class="vessel-title-row">
                     <div class="vessel-title">Mighty Mack • Thom's NautiDog 🐾</div>
-                    <span class="vessel-badge">S25 ULTRA</span>
+                    <span class="vessel-badge" id="hostBadge">WEB</span>
                 </div>
                 <div class="status-pill" id="avatarBadge">
                     <span class="pulse-light"></span>
-                    <span id="avatarStateText">Mack Watching Helm • All Systems Sound</span>
+                    <span id="avatarStateText">Mack is on watch</span>
                 </div>
             </div>
         </div>
@@ -1062,7 +1062,7 @@
         <!-- Incoming SMS Inbox Feed -->
         <div class="card">
             <div class="card-header">
-                <span class="card-title">📥 S25 Ultra Live Text Stream</span>
+                <span class="card-title">📥 Phone Text Stream</span>
                 <button class="btn-mini" onclick="loadSmsInbox(true)">🔄 Sync Device SMS</button>
             </div>
             <div id="smsInboxContainer" style="margin-top:8px;">
@@ -1101,15 +1101,15 @@
                 <span class="card-badge" id="totBudgetBadge">Budget: 12 Calls</span>
             </div>
             <p style="font-size:0.84rem;color:var(--text-sub);margin-bottom:12px;">
-                Planned, not built yet. Earlier versions showed a fixed template with made-up verifier results; this now reports that honestly.
+                The model proposes several next thoughts, scores each 0-10, keeps the best and expands them, then answers from the winning path. The scorer is the same model, so scores are its own opinion. Up to 12 model calls; it can take a minute or two.
             </p>
             <div class="input-group">
-                <input type="text" id="totProblem" value="Survey Thunder Bay Corridor" placeholder="Enter high-level objective..." onkeydown="if(event.key==='Enter') runToT()">
+                <input type="text" id="totProblem" value="" placeholder="A problem to reason through, e.g. plan a sonar survey of a 2 km wreck field in one day" onkeydown="if(event.key==='Enter') runToT()">
                 <button class="btn-primary btn-gold" id="btnRunToT" onclick="runToT()">Reason</button>
             </div>
             <div id="totTreeContainer" class="tot-tree">
                 <div style="font-size:0.84rem;color:var(--text-sub);text-align:center;padding:12px;">
-                    Not implemented yet.
+                    The tree appears here.
                 </div>
             </div>
             <div id="totWinningPlanContainer"></div>
@@ -1148,15 +1148,15 @@
         <div class="card">
             <div class="card-header">
                 <span class="card-title">📍 GPS Survey Radar</span>
-                <span class="card-badge" id="gpsBadge">Standby</span>
+                <span class="card-badge" id="gpsBadge">No fix</span>
             </div>
             <div class="radar-box">
                 <div class="radar-scope">
                     <div class="radar-beam"></div>
                     <div class="radar-blip"></div>
                 </div>
-                <div class="coord-readout" id="gpsReadout">Lat: 45.031200° | Lon: -83.435200°</div>
-                <div style="font-size:0.75rem;color:var(--text-sub);margin-top:4px;" id="gpsDetail">Thunder Bay Shipwreck Corridor • Accuracy ±1.5m</div>
+                <div class="coord-readout" id="gpsReadout">No position yet</div>
+                <div style="font-size:0.75rem;color:var(--text-sub);margin-top:4px;" id="gpsDetail">Press the button for a live fix from the phone.</div>
             </div>
             <button class="btn-primary" style="width:100%;" onclick="acquireGPS()">🎯 Acquire Live GPS Coordinates</button>
         </div>
@@ -1176,8 +1176,9 @@
                 </div>
             </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px;">
-                <button class="btn-primary" onclick="playHaptic()">📳 Haptic Pulse</button>
-                <button class="btn-primary btn-gold" onclick="toggleTorch()">🔦 Torch Toggle</button>
+                <button class="btn-primary" onclick="playHaptic(true)">📳 Haptic Pulse</button>
+                <button class="btn-primary btn-gold" id="torchBtn" onclick="toggleTorch()">🔦 Torch Toggle</button>
+                <div id="controlStatus" style="font-size:0.78rem;color:var(--text-sub);margin-top:8px;"></div>
             </div>
         </div>
     </section>
@@ -1400,10 +1401,25 @@
             } catch (e) {}
         }
 
-        function playHaptic() {
-            if (navigator.vibrate) {
-                navigator.vibrate([60, 40, 60]);
+        // ---- Phone controls: the app's bridge (window.NautiK9Android) when it is there, else the browser API.
+        function controlStatus(t, bad) {
+            const el = document.getElementById('controlStatus');
+            if (el) { el.innerText = t; el.style.color = bad ? '#fca5a5' : 'var(--text-sub)'; }
+        }
+        function bridgeCall(name, ...args) {
+            const b = window.NautiK9Android;
+            if (!b || typeof b[name] !== 'function') return null;
+            try { return JSON.parse(b[name](...args)); } catch (e) { return { error: String(e) }; }
+        }
+        // Silent pulse for every button press; the Haptic Pulse button reports what happened.
+        function playHaptic(report) {
+            const r = bridgeCall('vibrate', '60,40,60');
+            if (r) {
+                if (report) controlStatus(r.ok ? 'Vibrated (phone app).' : 'Vibrate failed: ' + r.error, !r.ok);
+                return;
             }
+            const ok = !!(navigator.vibrate && navigator.vibrate([60, 40, 60]));
+            if (report) controlStatus(ok ? 'Vibrate asked of the browser (it does not say whether the phone did it).' : 'This browser cannot vibrate. Use the NautiK9 phone app.', !ok);
         }
 
         function triggerBark() {
@@ -1615,60 +1631,92 @@
             }
         }
 
-        // Senses: GPS & Battery
-        function acquireGPS() {
-            playHaptic();
+        // Senses: GPS & Battery. Only real readings are shown; a failure says why.
+        function showFix(f) {
             const readout = document.getElementById('gpsReadout');
             const detail = document.getElementById('gpsDetail');
             const badge = document.getElementById('gpsBadge');
-            badge.innerText = "Acquiring...";
-            badge.style.color = "var(--gold)";
-
-            if ('geolocation' in navigator) {
-                navigator.geolocation.getCurrentPosition(
-                    pos => {
-                        const lat = pos.coords.latitude.toFixed(6);
-                        const lon = pos.coords.longitude.toFixed(6);
-                        readout.innerText = `Lat: ${lat}° | Lon: ${lon}°`;
-                        detail.innerText = `Accuracy: ±${pos.coords.accuracy.toFixed(1)}m | Alt: ${pos.coords.altitude || 0}m`;
-                        badge.innerText = "Locked";
-                        badge.style.color = "var(--emerald)";
-                    },
-                    err => {
-                        readout.innerText = "Lat: 45.031200° | Lon: -83.435200°";
-                        detail.innerText = "Default: Thunder Bay Shipwreck Corridor";
-                        badge.innerText = "Cached";
-                    },
-                    { enableHighAccuracy: true, timeout: 5000 }
-                );
+            if (!f || f.error) {
+                readout.innerText = 'No position';
+                detail.innerText = 'No fix: ' + ((f && f.error) || 'unknown error');
+                badge.innerText = 'No fix';
+                badge.style.color = '#fca5a5';
+                return;
             }
+            readout.innerText = `Lat: ${f.lat.toFixed(6)}° | Lon: ${f.lon.toFixed(6)}°`;
+            const acc = f.accuracy_m == null ? 'accuracy unknown' : `Accuracy: ±${Number(f.accuracy_m).toFixed(1)} m`;
+            const alt = f.altitude_m == null ? '' : ` | Alt: ${Number(f.altitude_m).toFixed(0)} m`;
+            const when = f.time_ms ? ` | ${new Date(f.time_ms).toLocaleTimeString()}` : '';
+            detail.innerText = `${acc}${alt} | ${f.provider}${when}`;
+            badge.innerText = 'Live fix';
+            badge.style.color = 'var(--emerald)';
+        }
+        window.n9OnLocation = showFix;
+        function acquireGPS() {
+            playHaptic();
+            const badge = document.getElementById('gpsBadge');
+            badge.innerText = 'Acquiring...';
+            badge.style.color = 'var(--gold)';
+            if (window.NautiK9Android && window.NautiK9Android.requestLocation) {
+                window.NautiK9Android.requestLocation();
+                return;
+            }
+            if (!('geolocation' in navigator)) { showFix({ error: 'this browser has no geolocation' }); return; }
+            navigator.geolocation.getCurrentPosition(
+                pos => showFix({ lat: pos.coords.latitude, lon: pos.coords.longitude, accuracy_m: pos.coords.accuracy, altitude_m: pos.coords.altitude, provider: 'browser', time_ms: pos.timestamp }),
+                err => showFix({ error: err.message || ('code ' + err.code) + (window.isSecureContext ? '' : ' (the page is not on https or localhost, so the browser refuses location)') }),
+                { enableHighAccuracy: true, timeout: 15000 }
+            );
         }
 
+        function showBattery(level, charging, extra) {
+            document.getElementById('battReadout').innerText = level == null ? 'unknown' : level + '%';
+            document.getElementById('chargeReadout').innerText = (charging ? 'Charging ⚡' : 'Discharging') + (extra || '');
+        }
         function initSensors() {
+            const r = bridgeCall('battery');
+            if (r) {
+                if (r.error) { document.getElementById('battReadout').innerText = 'unknown'; document.getElementById('chargeReadout').innerText = r.error; }
+                else showBattery(r.level, r.charging, r.temp_c ? ` • ${r.temp_c} °C` : '');
+                return;
+            }
             if ('getBattery' in navigator) {
-                navigator.getBattery().then(batt => {
-                    document.getElementById('battReadout').innerText = Math.round(batt.level * 100) + '%';
-                    document.getElementById('chargeReadout').innerText = batt.charging ? 'Charging ⚡' : 'Discharging';
-                });
+                navigator.getBattery().then(batt => showBattery(Math.round(batt.level * 100), batt.charging, ''));
+            } else {
+                document.getElementById('battReadout').innerText = 'unknown';
+                document.getElementById('chargeReadout').innerText = 'this browser does not report the battery';
             }
         }
 
         let torchTrack = null;
         async function toggleTorch() {
             playHaptic();
+            const b = window.NautiK9Android;
+            if (b && b.torch) {
+                const r = bridgeCall('torch', !b.torchState());
+                controlStatus(r.error ? 'Torch failed: ' + r.error : (r.on ? 'Torch on.' : 'Torch off.'), !!r.error);
+                return;
+            }
             try {
                 if (torchTrack) {
                     torchTrack.stop();
                     torchTrack = null;
+                    controlStatus('Torch off.');
                     return;
                 }
                 const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
                 torchTrack = stream.getVideoTracks()[0];
                 await torchTrack.applyConstraints({ advanced: [{ torch: true }] });
+                controlStatus('Torch on (browser camera).');
             } catch (e) {
-                playHaptic();
+                if (torchTrack) { torchTrack.stop(); torchTrack = null; }
+                controlStatus('Torch failed: ' + (e.message || e) + (window.isSecureContext ? '' : ' (camera needs https or localhost)'), true);
             }
         }
+        (function () {
+            const hb = document.getElementById('hostBadge');
+            if (hb) hb.innerText = window.NautiK9Android ? 'PHONE APP' : 'WEB';
+        })();
 
         // SMS Dispatcher & Work Mode Functions
         async function loadSmsInbox(sync = false) {
