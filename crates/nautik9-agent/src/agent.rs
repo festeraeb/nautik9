@@ -80,7 +80,7 @@ pub struct Agent {
     learned_budget: AtomicUsize,
 }
 
-fn strip_html_comments(s: &str) -> String {
+pub fn strip_html_comments(s: &str) -> String {
     let mut out = String::new();
     let mut rest = s;
     while let Some(i) = rest.find("<!--") {

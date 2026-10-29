@@ -61,7 +61,13 @@ impl Store {
                  rating INTEGER, PRIMARY KEY (session_id, idx));",
         )
         .map_err(|e| e.to_string())?;
+        crate::schedule::init_table(&conn).map_err(|e| e.to_string())?;
         Ok(Store { conn: Arc::new(Mutex::new(conn)), traj_path })
+    }
+
+    /// The connection, for tables that live in the same file (schedules).
+    pub fn shared_conn(&self) -> Arc<Mutex<Connection>> {
+        self.conn.clone()
     }
 
     pub async fn create_session(&self, title: &str) -> Result<String, String> {

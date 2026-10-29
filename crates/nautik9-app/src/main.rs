@@ -285,6 +285,8 @@ struct AppState {
     sms_bridge: SmsBridge,
     /// The agent, or why it could not start (reported by every /api/agent call).
     agent: Result<std::sync::Arc<nautik9_agent::Agent>, String>,
+    /// Runs schedules, `Jade/crontab` and the heartbeat (None when the agent is unavailable).
+    scheduler: Option<std::sync::Arc<nautik9_agent::schedule::Runner>>,
 }
 
 struct ServeOptions {
@@ -325,6 +327,9 @@ fn build_router(state: AppState, token: String) -> axum::Router {
         .route("/api/agent/sessions/{id}", get(agent_api::session).delete(agent_api::delete_session))
         .route("/api/agent/sessions/{id}/rate", post(agent_api::rate))
         .route("/api/agent/sessions/{id}/retry", post(agent_api::retry))
+        .route("/api/agent/schedules", get(agent_api::schedules).post(agent_api::add_schedule))
+        .route("/api/agent/schedules/{id}", axum::routing::delete(agent_api::delete_schedule))
+        .route("/api/agent/schedules/{id}/run", post(agent_api::run_schedule))
         .route("/api/agent/export", get(agent_api::export))
         .route("/api/agent/web_search", post(agent_api::web_search))
         .route("/api/agent/mcp", post(agent_api::mcp_proxy))
@@ -465,6 +470,16 @@ async fn serve_mobile_web(
         vault_path,
         sms_messages: std::sync::Arc::new(tokio::sync::RwLock::new(initial_sms)),
         work_config: std::sync::Arc::new(tokio::sync::RwLock::new(work_config)),
+        scheduler: match &agent {
+            Ok(a) => match agent_api::heartbeat_minutes(&opts.config_dir) {
+                Ok(hb) => Some(nautik9_agent::schedule::Runner::new(a.clone(), hb)),
+                Err(e) => {
+                    println!("Agent: scheduler NOT started: {e}");
+                    None
+                }
+            },
+            Err(_) => None,
+        },
         agent,
         lemonade,
         fleet_url: opts.fleet_url.clone(),
@@ -475,6 +490,10 @@ async fn serve_mobile_web(
         Err(e) => println!("Agent: NOT available: {e}"),
     }
 
+    if let Some(r) = &state.scheduler {
+        r.spawn();
+        println!("Agent: scheduler running (ticks every 30 s; Jade/crontab, Jade/HEARTBEAT.md, log Jade/Logs/cron.log)");
+    }
     let app = build_router(state, token.clone());
 
     let addr = format!("{}:{}", opts.bind, opts.port);
@@ -1094,7 +1113,9 @@ mod tests {
             fleet_url: "http://127.0.0.1:1".into(),
             sms_bridge,
             agent: agent_api::build_agent(dir, &dir.join("vault.db"), std::sync::Arc::new(dead_lemonade()), Default::default()).map(std::sync::Arc::new),
+            scheduler: None,
         };
+        let state = AppState { scheduler: state.agent.as_ref().ok().map(|a| nautik9_agent::schedule::Runner::new(a.clone(), 0)), ..state };
         build_router(state, TOKEN.to_string())
     }
 
@@ -1111,6 +1132,31 @@ mod tests {
         let status = resp.status();
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         (status, serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
+    }
+
+    #[tokio::test]
+    async fn schedules_api_add_list_run_delete() {
+        let d = tempfile::tempdir().unwrap();
+        let a = app(d.path());
+        let (s, _) = call(&a, "GET", "/api/agent/schedules", None, None).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+        let (s, v) = call(&a, "POST", "/api/agent/schedules", Some(TOKEN), Some(serde_json::json!({"spec":"whenever","prompt":"x"}))).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+        let (s, v) = call(&a, "POST", "/api/agent/schedules", Some(TOKEN), Some(serde_json::json!({"spec":"daily at 08:00","prompt":"Morning brief"}))).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        let id = v["id"].as_str().unwrap().to_string();
+        let (_, l) = call(&a, "GET", "/api/agent/schedules", Some(TOKEN), None).await;
+        assert_eq!(l.as_array().unwrap().len(), 1);
+        // No model endpoint in this test: the run is recorded as an error, not an answer.
+        let (s, v) = call(&a, "POST", &format!("/api/agent/schedules/{id}/run"), Some(TOKEN), Some(serde_json::json!({}))).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert!(v["last_result"].as_str().unwrap().starts_with("ERROR:"), "{v}");
+        let (s, _) = call(&a, "POST", "/api/agent/schedules/nope/run", Some(TOKEN), Some(serde_json::json!({}))).await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+        let (s, _) = call(&a, "DELETE", &format!("/api/agent/schedules/{id}"), Some(TOKEN), None).await;
+        assert_eq!(s, StatusCode::OK);
+        let (s, _) = call(&a, "DELETE", &format!("/api/agent/schedules/{id}"), Some(TOKEN), None).await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
