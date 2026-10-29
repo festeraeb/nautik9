@@ -60,21 +60,38 @@ public class MainActivity extends Activity {
         start();
     }
 
+    private final java.util.concurrent.atomic.AtomicBoolean starting = new java.util.concurrent.atomic.AtomicBoolean();
+
+    /** Start the engines if needed and show the page. Safe to call again: one start at a time. */
     private void start() {
+        if (!starting.compareAndSet(false, true)) return;
         new Thread(() -> {
-            String url;
             try {
                 Engines e = Engines.get(this);
                 e.startAll();
-                url = HOME + "/?token=" + e.token();
+                if (!Engines.alive(Engines.SERVER_PORT, "/api/health")) {
+                    throw new java.io.IOException("it did not answer within 60 s (see files/server.log)");
+                }
+                String url = HOME + "/?token=" + e.token();
+                runOnUiThread(() -> web.loadUrl(url));
             } catch (Exception ex) {
                 String msg = String.valueOf(ex.getMessage()).replace("<", "&lt;");
                 runOnUiThread(() -> web.loadData("<body style='background:#0b1220;color:#fca5a5;font-family:sans-serif;padding:40px'>"
-                        + "The NautiK9 server did not start: " + msg + "</body>", "text/html", "utf-8"));
-                return;
+                        + "The NautiK9 server did not start: " + msg
+                        + "<p>Switch away and back to NautiK9 to try again.</p></body>", "text/html", "utf-8"));
+            } finally {
+                starting.set(false);
             }
-            runOnUiThread(() -> web.loadUrl(url));
         }).start();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // Coming back to the app while it still shows the waiting or error screen (the first load
+        // was lost, or the server was not up yet): try again instead of waiting forever.
+        String u = web == null ? null : web.getUrl();
+        if (u == null || !u.startsWith(HOME + "/")) start();
     }
 
     @Override

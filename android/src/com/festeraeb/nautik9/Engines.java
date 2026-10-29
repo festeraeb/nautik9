@@ -76,8 +76,9 @@ final class Engines {
             pb.redirectOutput(ProcessBuilder.Redirect.appendTo(new File(files, "server.log")));
             server = pb.start();
         }
-        for (int i = 0; i < 100 && !alive(SERVER_PORT, "/api/health"); i++) {
-            sleep(100);
+        // Up to 60 s: a first start can be slow while the phone is busy.
+        for (int i = 0; i < 300 && !alive(SERVER_PORT, "/api/health"); i++) {
+            sleep(200);
         }
     }
 
