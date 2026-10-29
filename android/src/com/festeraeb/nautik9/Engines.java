@@ -90,7 +90,7 @@ final class Engines {
                 "-m", model.getPath(),
                 "-a", LLM_ALIAS,
                 "--host", "127.0.0.1", "--port", String.valueOf(LLM_PORT),
-                "-c", "12288", "-t", "6", "--jinja");
+                "-c", "8192", "-ctk", "q8_0", "-ctv", "q8_0", "-t", "6", "--jinja");
         pb.redirectErrorStream(true);
         pb.redirectOutput(ProcessBuilder.Redirect.appendTo(new File(files, "llm.log")));
         llm = pb.start();
