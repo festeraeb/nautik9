@@ -12,6 +12,8 @@
 //! - [`memory`]: embeddings client, SQLite vector/FTS5 index, hybrid search, the `embeddings` tool.
 //! - [`journal`]: daily notes that summarise earlier chats.
 //! - [`playbook`]: Jade-style Playbooks (deterministic JSON task lists run through the tools).
+//! - [`sandbox`]: the opt-in `sandbox` tool (shell/Python/Node with limits). [`script`]: note scripts
+//!   (`jade.*` in JavaScript). [`template`]: template notes. [`tot`]: the tree-of-thought reasoner.
 //! - [`html2md`]: page HTML to Markdown for `web_fetch`.
 
 pub mod agent;
@@ -20,6 +22,10 @@ pub mod schedule;
 pub mod journal;
 pub mod memory;
 pub mod playbook;
+pub mod sandbox;
+pub mod script;
+pub mod template;
+pub mod tot;
 pub mod store;
 pub mod tools;
 
