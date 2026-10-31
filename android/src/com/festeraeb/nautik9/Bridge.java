@@ -294,7 +294,9 @@ final class Bridge {
         try {
             java.util.Enumeration<java.net.NetworkInterface> ifs = java.net.NetworkInterface.getNetworkInterfaces();
             while (ifs != null && ifs.hasMoreElements()) {
-                for (java.net.InterfaceAddress ia : ifs.nextElement().getInterfaceAddresses()) {
+                java.net.NetworkInterface ni = ifs.nextElement();
+                if (!ni.isUp()) continue;
+                for (java.net.InterfaceAddress ia : ni.getInterfaceAddresses()) {
                     byte[] b = ia.getAddress().getAddress();
                     if (b.length == 4 && (b[0] & 0xff) == 100 && (b[1] & 0xff) >= 64 && (b[1] & 0xff) < 128) return true;
                 }

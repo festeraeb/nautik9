@@ -48,6 +48,18 @@ pub fn is_tailscale() -> bool {
 /// Plain text for a home endpoint that is only reachable over Tailscale while it is off.
 pub const HOME_UNREACHABLE_MESSAGE: &str = "can't reach home: Tailscale is off on the phone";
 
+/// A 2-second TCP connect to the provider's host:port. A tailnet address with Tailscale stopped
+/// (or the VPN interface up but not connected) otherwise hangs for minutes before failing.
+pub async fn tcp_reachable(url: &str, timeout: Duration) -> bool {
+    let rest = url.split("//").nth(1).unwrap_or(url);
+    let hostport = rest.split('/').next().unwrap_or("");
+    let (host, port) = match hostport.rsplit_once(':') {
+        Some((h, p)) => (h.to_string(), p.parse::<u16>().unwrap_or(80)),
+        None => (hostport.to_string(), if url.starts_with("https") { 443 } else { 80 }),
+    };
+    matches!(tokio::time::timeout(timeout, tokio::net::TcpStream::connect((host.as_str(), port))).await, Ok(Ok(_)))
+}
+
 /// True for a URL whose host is a Tailscale (CGNAT 100.64.0.0/10) address.
 pub fn is_tailnet_url(url: &str) -> bool {
     let host = url.split("//").nth(1).unwrap_or(url).split(['/', ':']).next().unwrap_or("");
@@ -380,6 +392,9 @@ impl LemonadeModule {
         for p in chain {
             if p.offline {
                 note_local_model_use();
+            } else if is_tailnet_url(&p.base_url) && !tcp_reachable(&p.base_url, Duration::from_secs(2)).await {
+                attempts.push(format!("{} ({}): skipped, can't reach home (no answer in 2 s; is Tailscale connected?)", p.name, p.base_url));
+                continue;
             }
             match self.try_provider(p, sys, prompt).await {
                 Ok((reply, model)) => {
@@ -419,6 +434,9 @@ impl LemonadeModule {
         for p in chain {
             if p.offline {
                 note_local_model_use();
+            } else if is_tailnet_url(&p.base_url) && !tcp_reachable(&p.base_url, Duration::from_secs(2)).await {
+                attempts.push(format!("{} ({}): skipped, can't reach home (no answer in 2 s; is Tailscale connected?)", p.name, p.base_url));
+                continue;
             }
             let model = match self.resolve_model(p).await {
                 Ok(m) => m,
