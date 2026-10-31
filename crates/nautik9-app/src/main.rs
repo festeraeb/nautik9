@@ -327,6 +327,8 @@ fn build_router(state: AppState, token: String) -> axum::Router {
         .route("/api/status", get(handle_status))
         .route("/api/providers", get(handle_providers))
         .route("/api/net", get(handle_net_get).post(handle_net_set))
+        .route("/api/models", get(handle_models))
+        .route("/api/model", get(handle_model_get).post(handle_model_set))
         .route("/api/search", post(handle_search))
         .route("/api/chat", post(handle_chat))
         .route("/api/decompose", post(handle_decompose))
@@ -989,6 +991,28 @@ async fn fleet_status_value(fleet_url: &str) -> Result<serde_json::Value, String
         }
         None => Ok(serde_json::json!({ "ok": true, "source": url, "data": v })),
     }
+}
+
+/// `GET /api/models`: "auto" plus what the first remote provider lists, for the picker.
+async fn handle_models(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> axum::Json<serde_json::Value> {
+    match state.lemonade.list_remote_models().await {
+        Ok((provider, ids)) => axum::Json(serde_json::json!({ "ok": true, "provider": provider, "models": ids, "selected": nautik9_lemonade::preferred_model().unwrap_or_else(|| "auto".into()) })),
+        Err(e) => axum::Json(serde_json::json!({ "ok": false, "error": e, "models": [], "selected": nautik9_lemonade::preferred_model().unwrap_or_else(|| "auto".into()) })),
+    }
+}
+
+async fn handle_model_get() -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({ "model": nautik9_lemonade::preferred_model().unwrap_or_else(|| "auto".into()) }))
+}
+
+/// `POST /api/model {"model": "auto" | "<id>"}`: the model asked of remote providers.
+async fn handle_model_set(
+    axum::Json(payload): axum::Json<serde_json::Value>,
+) -> axum::Json<serde_json::Value> {
+    nautik9_lemonade::set_preferred_model(payload["model"].as_str());
+    axum::Json(serde_json::json!({ "ok": true, "model": nautik9_lemonade::preferred_model().unwrap_or_else(|| "auto".into()) }))
 }
 
 /// `GET /api/net`: what the server believes about connectivity, and how long the on-device

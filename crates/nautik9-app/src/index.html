@@ -998,6 +998,11 @@
                 Asked in this order; the first that answers wins. If none answer you get an error, never an invented reply. Edit providers.json in the config folder to change the list.
             </p>
             <div id="providersList" style="display:flex;flex-direction:column;gap:8px;"></div>
+            <div style="margin-top:10px;font-size:0.85rem;">
+                <label for="modelPick">Home model:</label>
+                <select id="modelPick" onchange="pickModel(this.value)" style="max-width:100%;background:#0b1220;color:#e2e8f0;border:1px solid var(--border);border-radius:8px;padding:4px;"><option value="auto">Auto (smart)</option></select>
+                <div id="modelPickNote" style="color:var(--text-sub);font-size:0.75rem;margin-top:3px;"></div>
+            </div>
             <div id="offlineModelBox" style="display:none;margin-top:10px;font-size:0.85rem;"></div>
         </div>
 
@@ -2057,6 +2062,25 @@
             }
         }
 
+        // Model picker: "Auto (smart)" lets the home router choose per request; an id goes straight to it.
+        async function loadModelPicker() {
+            const sel = document.getElementById('modelPick');
+            if (!sel) return;
+            let saved = 'auto';
+            try { saved = localStorage.getItem('nautik9_model') || 'auto'; } catch (e) {}
+            if (saved !== 'auto') fetch('/api/model', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: saved }) }).catch(() => {});
+            let d = { models: [] };
+            try { d = await (await fetch('/api/models')).json(); } catch (e) {}
+            sel.innerHTML = '<option value="auto">Auto (smart)</option>' + (d.models || []).map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('');
+            if (saved !== 'auto' && !(d.models || []).includes(saved)) sel.innerHTML += `<option value="${esc(saved)}">${esc(saved)} (not listed now)</option>`;
+            sel.value = saved;
+            const note = document.getElementById('modelPickNote');
+            if (note) note.innerText = d.ok ? `${d.models.length} model(s) from ${d.provider}` : ('Model list unavailable: ' + (d.error || 'no remote provider'));
+        }
+        async function pickModel(v) {
+            try { localStorage.setItem('nautik9_model', v); } catch (e) {}
+            await fetch('/api/model', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: v }) }).catch(() => {});
+        }
         async function loadDeviceAndProviders() {
             try {
                 const st = await (await fetch('/api/status')).json();
@@ -2070,6 +2094,7 @@
                 providerUrls = pr.providers.map(p => p.base_url);
                 updateNetNote();
                 document.getElementById('providersBadge').innerText = pr.providers.length + ' endpoint(s)';
+                loadModelPicker();
                 document.getElementById('providersList').innerHTML = pr.providers.map((p, i) => `
                     <div class="node-mini-card">
                         <div class="node-name"><span>${i + 1}. ${esc(p.name)}</span>${p.offline ? '<span class="badge-status status-pending">OFFLINE-OK</span>' : ''}</div>

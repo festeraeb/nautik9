@@ -48,6 +48,8 @@
     </application>
 
     <queries>
+        <!-- Package visibility (Android 11+): lets the app tell whether Tailscale is installed. -->
+        <package android:name="com.tailscale.ipn" />
         <intent>
             <action android:name="android.intent.action.SENDTO" />
             <data android:scheme="smsto" />

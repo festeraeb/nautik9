@@ -22,6 +22,21 @@ pub fn is_online() -> bool {
     NET_ONLINE.load(Ordering::Relaxed)
 }
 
+/// Model the user picked for remote (non-offline) providers: None or "auto" = the provider's
+/// own default (a router's "auto" picks per request). Set from the page's model picker.
+static PREFERRED_MODEL: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
+pub fn set_preferred_model(m: Option<&str>) {
+    let v = m.map(str::trim).filter(|m| !m.is_empty() && *m != "auto").map(str::to_string);
+    if let Ok(mut g) = PREFERRED_MODEL.write() {
+        *g = v;
+    }
+}
+
+pub fn preferred_model() -> Option<String> {
+    PREFERRED_MODEL.read().ok().and_then(|g| g.clone())
+}
+
 pub fn set_tailscale(up: bool) {
     NET_TAILSCALE.store(up, Ordering::Relaxed);
 }
@@ -264,6 +279,11 @@ impl LemonadeModule {
     /// Model to request from `p`: the configured one, else the one the server
     /// reports as loaded (lemond health), else the first listed by /models.
     async fn resolve_model(&self, p: &Provider) -> Result<String, String> {
+        if !p.offline {
+            if let Some(m) = preferred_model() {
+                return Ok(m);
+            }
+        }
         if let Some(m) = &p.model {
             return Ok(m.clone());
         }
@@ -322,6 +342,7 @@ impl LemonadeModule {
         if !resp.status().is_success() {
             return Err(format!("HTTP {}", resp.status().as_u16()));
         }
+        let routed = resp.headers().get("x-routed-model").and_then(|h| h.to_str().ok()).map(str::to_string).filter(|m| !m.is_empty());
         let body: ChatCompletionResponse = resp.json().await.map_err(|e| format!("bad response: {}", short_err(&e)))?;
         let text = body
             .choices
@@ -330,7 +351,7 @@ impl LemonadeModule {
             .map(|m| m.content.trim().to_string())
             .filter(|t| !t.is_empty())
             .ok_or_else(|| "empty reply (a thinking model may have used the whole token budget on reasoning)".to_string())?;
-        Ok((text, body.model.filter(|m| !m.is_empty()).unwrap_or(model)))
+        Ok((text, routed.or(body.model.filter(|m| !m.is_empty() && m != "auto")).unwrap_or(model)))
     }
 
     /// Ask the chain. `offline_only` restricts to providers marked `offline`.
@@ -417,6 +438,8 @@ impl LemonadeModule {
             let res = async {
                 let resp = self.authed(self.client.post(&url), p).json(&body).send().await.map_err(|e| short_err(&e))?;
                 let status = resp.status();
+                // A router says which model really answered in this header; the body's "model" may be "auto".
+                let routed = resp.headers().get("x-routed-model").and_then(|h| h.to_str().ok()).map(str::to_string).filter(|m| !m.is_empty());
                 let v: serde_json::Value = resp.json().await.map_err(|e| format!("bad response: {}", short_err(&e)))?;
                 if !status.is_success() {
                     let msg = v["error"]["message"].as_str().or(v["error"].as_str()).unwrap_or("");
@@ -433,7 +456,7 @@ impl LemonadeModule {
                         "empty reply".to_string()
                     });
                 }
-                Ok((msg, v["model"].as_str().filter(|m| !m.is_empty()).map(str::to_string), v["choices"][0]["finish_reason"].as_str().map(str::to_string)))
+                Ok((msg, routed.or_else(|| v["model"].as_str().filter(|m| !m.is_empty() && *m != "auto").map(str::to_string)), v["choices"][0]["finish_reason"].as_str().map(str::to_string)))
             }
             .await;
             match res {
@@ -451,6 +474,26 @@ impl LemonadeModule {
             }
         }
         Err(ChatFailure { error: "no model endpoint answered".to_string(), attempts })
+    }
+
+    /// Model ids the first remote (non-offline) provider lists at `/models`, for a picker.
+    /// Returns (provider name, ids) or the real error.
+    pub async fn list_remote_models(&self) -> Result<(String, Vec<String>), String> {
+        let p = self.config.providers.iter().find(|p| !p.offline).ok_or("no remote provider configured")?;
+        if !is_online() {
+            return Err(OFFLINE_MESSAGE.to_string());
+        }
+        if !is_tailscale() && is_tailnet_url(&p.base_url) {
+            return Err(HOME_UNREACHABLE_MESSAGE.to_string());
+        }
+        let url = format!("{}/models", p.base_url.trim_end_matches('/'));
+        let resp = self.authed(self.client.get(&url), p).send().await.map_err(|e| format!("{}: {}", p.name, short_err(&e)))?;
+        if !resp.status().is_success() {
+            return Err(format!("{}: HTTP {}", p.name, resp.status().as_u16()));
+        }
+        let v: serde_json::Value = resp.json().await.map_err(|e| format!("{}: {}", p.name, short_err(&e)))?;
+        let ids = v["data"].as_array().map(|a| a.iter().filter_map(|m| m["id"].as_str().map(str::to_string)).collect()).unwrap_or_default();
+        Ok((p.name.clone(), ids))
     }
 
     /// Draft an SMS reply. `is_owner` selects the prompt; `vault_context` is
