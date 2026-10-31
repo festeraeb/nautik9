@@ -996,6 +996,7 @@ async fn fleet_status_value(fleet_url: &str) -> Result<serde_json::Value, String
 async fn handle_net_get() -> axum::Json<serde_json::Value> {
     axum::Json(serde_json::json!({
         "online": nautik9_lemonade::is_online(),
+        "tailscale": nautik9_lemonade::is_tailscale(),
         "local_model_idle_seconds": nautik9_lemonade::local_model_idle_seconds(),
     }))
 }
@@ -1010,7 +1011,10 @@ async fn handle_net_set(
     match payload["online"].as_bool() {
         Some(online) => {
             nautik9_lemonade::set_online(online);
-            axum::Json(serde_json::json!({ "ok": true, "online": online })).into_response()
+            if let Some(ts) = payload["tailscale"].as_bool() {
+                nautik9_lemonade::set_tailscale(ts);
+            }
+            axum::Json(serde_json::json!({ "ok": true, "online": online, "tailscale": nautik9_lemonade::is_tailscale() })).into_response()
         }
         None => (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({ "ok": false, "error": "missing `online` (bool)" }))).into_response(),
     }

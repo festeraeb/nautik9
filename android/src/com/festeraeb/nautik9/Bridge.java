@@ -282,9 +282,34 @@ final class Bridge {
                     : c.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) ? "ethernet"
                     : c.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) ? "vpn" : "other";
             return o.put("online", internet).put("transport", t)
-                    .put("metered", !c.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED)).toString();
+                    .put("metered", !c.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED))
+                    .put("tailscale", tailscaleUp()).put("tailscale_installed", installed(ctx, "com.tailscale.ipn")).toString();
         } catch (Exception e) {
             return error(e.toString());
+        }
+    }
+
+    /** True when some interface carries a Tailscale address (100.64.0.0/10). */
+    static boolean tailscaleUp() {
+        try {
+            java.util.Enumeration<java.net.NetworkInterface> ifs = java.net.NetworkInterface.getNetworkInterfaces();
+            while (ifs != null && ifs.hasMoreElements()) {
+                for (java.net.InterfaceAddress ia : ifs.nextElement().getInterfaceAddresses()) {
+                    byte[] b = ia.getAddress().getAddress();
+                    if (b.length == 4 && (b[0] & 0xff) == 100 && (b[1] & 0xff) >= 64 && (b[1] & 0xff) < 128) return true;
+                }
+            }
+        } catch (java.net.SocketException | RuntimeException ignored) {
+        }
+        return false;
+    }
+
+    static boolean installed(Context ctx, String pkg) {
+        try {
+            ctx.getPackageManager().getPackageInfo(pkg, 0);
+            return true;
+        } catch (PackageManager.NameNotFoundException e) {
+            return false;
         }
     }
 

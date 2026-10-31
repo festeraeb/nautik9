@@ -8,6 +8,9 @@ use std::time::{Duration, Instant};
 /// connectivity state; defaults to online). When offline, non-`offline` providers are
 /// skipped at once instead of waiting on connect timeouts.
 static NET_ONLINE: AtomicBool = AtomicBool::new(true);
+/// Whether the phone has a Tailscale address (100.64.0.0/10). Providers on the tailnet are
+/// skipped with a plain message when it is off, instead of timing out on mobile data.
+static NET_TAILSCALE: AtomicBool = AtomicBool::new(true);
 /// Unix seconds of the last request sent to an `offline` (local) provider, 0 = never.
 static LOCAL_MODEL_LAST_USE: AtomicU64 = AtomicU64::new(0);
 
@@ -17,6 +20,27 @@ pub fn set_online(online: bool) {
 
 pub fn is_online() -> bool {
     NET_ONLINE.load(Ordering::Relaxed)
+}
+
+pub fn set_tailscale(up: bool) {
+    NET_TAILSCALE.store(up, Ordering::Relaxed);
+}
+
+pub fn is_tailscale() -> bool {
+    NET_TAILSCALE.load(Ordering::Relaxed)
+}
+
+/// Plain text for a home endpoint that is only reachable over Tailscale while it is off.
+pub const HOME_UNREACHABLE_MESSAGE: &str = "can't reach home: Tailscale is off on the phone";
+
+/// True for a URL whose host is a Tailscale (CGNAT 100.64.0.0/10) address.
+pub fn is_tailnet_url(url: &str) -> bool {
+    let host = url.split("//").nth(1).unwrap_or(url).split(['/', ':']).next().unwrap_or("");
+    let mut it = host.split('.');
+    match (it.next().and_then(|a| a.parse::<u8>().ok()), it.next().and_then(|b| b.parse::<u8>().ok())) {
+        (Some(100), Some(b)) => (64..128).contains(&b),
+        _ => false,
+    }
 }
 
 /// Plain text for a tool or feature that cannot work without a connection.
@@ -48,6 +72,8 @@ fn plan_chain<'a>(providers: &'a [Provider], offline_only: bool) -> (Vec<&'a Pro
     for p in providers.iter().filter(|p| !offline_only || p.offline) {
         if !p.offline && !online {
             skipped.push(format!("{} ({}): skipped, the phone is offline", p.name, p.base_url));
+        } else if !p.offline && !is_tailscale() && is_tailnet_url(&p.base_url) {
+            skipped.push(format!("{} ({}): skipped, {}", p.name, p.base_url, HOME_UNREACHABLE_MESSAGE));
         } else {
             chain.push(p);
         }
@@ -657,6 +683,15 @@ mod tests {
         }
         let (sys, _) = build_sms_prompts(&req(false, None));
         assert!(sys.contains("Sam is busy right now and will reply later"));
+    }
+
+    #[test]
+    fn tailnet_urls_are_recognised() {
+        assert!(is_tailnet_url("http://100.65.31.48:13305/v1"));
+        assert!(is_tailnet_url("https://100.127.0.1/v1"));
+        assert!(!is_tailnet_url("http://100.1.2.3/v1"));
+        assert!(!is_tailnet_url("http://127.0.0.1:8341/v1"));
+        assert!(!is_tailnet_url("https://cesarops.com/lemonade/v1"));
     }
 
     #[test]

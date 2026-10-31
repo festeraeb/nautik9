@@ -1430,10 +1430,26 @@
                 badge.style.color = n.online ? 'var(--emerald)' : 'var(--rose)';
                 badge.style.borderColor = n.online ? 'var(--emerald)' : 'var(--rose)';
             }
-            const note = document.getElementById('netNote');
-            if (note) note.innerText = n.online ? '' : 'No connection: notes, search, texts, GPS, torch and the on-device model work; web, weather, fleet and the home Lemonade need a connection.';
-            fetch('/api/net', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ online: !!n.online }) }).catch(() => {});
+            updateNetNote();
+            const body = { online: !!n.online };
+            if (typeof n.tailscale === 'boolean') body.tailscale = n.tailscale;
+            fetch('/api/net', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => {});
             if (typeof renderOfflineModel === 'function') renderOfflineModel();
+        }
+        // Home endpoints on the tailnet (100.64.0.0/10) need Tailscale on the phone; say so plainly.
+        let providerUrls = [];
+        const isTailnetUrl = u => { const m = /\/\/(\d+)\.(\d+)\./.exec(u || ''); return !!m && m[1] === '100' && +m[2] >= 64 && +m[2] < 128; };
+        function updateNetNote() {
+            const note = document.getElementById('netNote');
+            if (!note) return;
+            const n = netState;
+            if (!n.online) { note.innerText = 'No connection: notes, search, texts, GPS, torch and the on-device model work; web, weather, fleet and the home Lemonade need a connection.'; return; }
+            const homeOnTailnet = providerUrls.some(isTailnetUrl);
+            if (homeOnTailnet && n.tailscale === false) {
+                note.innerText = "Can't reach home: Tailscale is off on the phone" + (n.tailscale_installed === false ? ' (not installed)' : '') + (n.transport === 'cell' ? '. On mobile data only the on-device model answers until it is on.' : '.');
+                return;
+            }
+            note.innerText = '';
         }
         window.n9OnNetwork = applyNet;
         function readNet() {
@@ -2051,6 +2067,8 @@
             } catch (e) {}
             try {
                 const pr = await (await fetch('/api/providers')).json();
+                providerUrls = pr.providers.map(p => p.base_url);
+                updateNetNote();
                 document.getElementById('providersBadge').innerText = pr.providers.length + ' endpoint(s)';
                 document.getElementById('providersList').innerHTML = pr.providers.map((p, i) => `
                     <div class="node-mini-card">
