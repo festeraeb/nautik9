@@ -321,6 +321,53 @@ final class Bridge {
         }
     }
 
+    /**
+     * HTTP to the app's own server from Java, for when the WebView refuses loopback requests
+     * (airplane mode: Chromium reports "Failed to fetch" even for 127.0.0.1). The page gets the
+     * answer as window.n9OnHttp(id, status, bodyText). Only paths on the local server are allowed.
+     */
+    @JavascriptInterface
+    public void httpAsync(String id, String method, String path, String contentType, String body) {
+        new Thread(() -> {
+            int status = 0;
+            String text;
+            try {
+                if (!path.startsWith("/")) throw new java.io.IOException("only local paths");
+                HttpURLConnection c = (HttpURLConnection) new URL("http://127.0.0.1:" + Engines.SERVER_PORT + path).openConnection();
+                c.setRequestMethod(method);
+                c.setConnectTimeout(3000);
+                c.setReadTimeout(600_000);
+                c.setRequestProperty("Authorization", "Bearer " + engines.token());
+                if (body != null && !body.isEmpty()) {
+                    c.setDoOutput(true);
+                    c.setRequestProperty("Content-Type", contentType == null || contentType.isEmpty() ? "application/json" : contentType);
+                    try (java.io.OutputStream out = c.getOutputStream()) {
+                        out.write(body.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    }
+                }
+                status = c.getResponseCode();
+                java.io.InputStream in = status >= 400 ? c.getErrorStream() : c.getInputStream();
+                java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+                if (in != null) {
+                    byte[] b = new byte[8192];
+                    for (int n; (n = in.read(b)) > 0; ) buf.write(b, 0, n);
+                    in.close();
+                }
+                text = buf.toString("UTF-8");
+            } catch (Exception e) {
+                text = e.toString();
+            }
+            final int st = status;
+            final String payload;
+            try {
+                payload = new JSONObject().put("id", id).put("status", st).put("body", text).toString();
+            } catch (JSONException e) {
+                return;
+            }
+            if (web != null) web.post(() -> web.evaluateJavascript("window.n9OnHttp&&window.n9OnHttp(" + payload + ")", null));
+        }, "http-" + id).start();
+    }
+
     @JavascriptInterface
     public void downloadOfflineModel() {
         Download.start(ctx, engines.modelsDir());

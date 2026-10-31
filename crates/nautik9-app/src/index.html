@@ -1316,10 +1316,28 @@
             if (url.startsWith('/')) {
                 init.headers = Object.assign({}, init.headers || {}, { 'Authorization': 'Bearer ' + getToken() });
             }
-            const res = await _fetch(input, init);
+            let res;
+            try {
+                res = await _fetch(input, init);
+            } catch (e) {
+                // Airplane mode: the WebView refuses even loopback requests ("Failed to fetch").
+                // The app then does the request from Java and hands the answer back.
+                if (!(url.startsWith('/') && window.NautiK9Android && window.NautiK9Android.httpAsync)) throw e;
+                res = await bridgeFetch(url, init);
+            }
             if (res.status === 401 && url.startsWith('/api/') && url !== '/api/health') showTokenPrompt();
             return res;
         };
+        const n9HttpWaiters = {};
+        window.n9OnHttp = r => { const w = n9HttpWaiters[r.id]; if (w) { delete n9HttpWaiters[r.id]; w(r); } };
+        function bridgeFetch(url, init) {
+            return new Promise(resolve => {
+                const id = 'h' + Date.now() + Math.random().toString(16).slice(2);
+                n9HttpWaiters[id] = r => resolve(new Response(r.status ? r.body : '', { status: r.status || 503, headers: { 'Content-Type': 'application/json' } }));
+                const h = init.headers || {};
+                window.NautiK9Android.httpAsync(id, (init.method || 'GET').toUpperCase(), url, h['Content-Type'] || '', typeof init.body === 'string' ? init.body : '');
+            });
+        }
         function showTokenPrompt() {
             if (document.getElementById('tokenBanner')) return;
             const b = document.createElement('div');

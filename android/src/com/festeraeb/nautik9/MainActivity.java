@@ -34,6 +34,8 @@ public class MainActivity extends Activity {
         bridge = new Bridge(this, Engines.get(this));
         bridge.attach(web);
         web.addJavascriptInterface(bridge, "NautiK9Android");
+        // The page talks to a server on this phone; it must keep working with no network at all.
+        web.setNetworkAvailable(true);
         web.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
