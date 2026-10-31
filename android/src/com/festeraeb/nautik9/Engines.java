@@ -167,7 +167,12 @@ final class Engines {
             c.setConnectTimeout(500);
             c.setReadTimeout(1500);
             if (c.getResponseCode() != 200) return null;
-            String body = new String(c.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+            try (java.io.InputStream in = c.getInputStream()) {
+                byte[] b = new byte[4096];
+                for (int n; (n = in.read(b)) > 0; ) buf.write(b, 0, n);
+            }
+            String body = new String(buf.toByteArray(), StandardCharsets.UTF_8);
             org.json.JSONObject o = new org.json.JSONObject(body);
             return o.isNull("local_model_idle_seconds") ? null : o.getLong("local_model_idle_seconds");
         } catch (Exception e) {
