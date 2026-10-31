@@ -329,7 +329,7 @@ impl LemonadeModule {
             .and_then(|c| c.message.as_ref())
             .map(|m| m.content.trim().to_string())
             .filter(|t| !t.is_empty())
-            .ok_or_else(|| "empty reply".to_string())?;
+            .ok_or_else(|| "empty reply (a thinking model may have used the whole token budget on reasoning)".to_string())?;
         Ok((text, body.model.filter(|m| !m.is_empty()).unwrap_or(model)))
     }
 
@@ -426,7 +426,12 @@ impl LemonadeModule {
                 let has_text = msg["content"].as_str().is_some_and(|t| !t.trim().is_empty());
                 let has_calls = msg["tool_calls"].as_array().is_some_and(|a| !a.is_empty());
                 if !has_text && !has_calls {
-                    return Err("empty reply".to_string());
+                    let thought = msg["reasoning_content"].as_str().map(str::len).unwrap_or(0);
+                    return Err(if thought > 0 {
+                        format!("empty reply: the model spent its whole token budget thinking ({thought} characters of reasoning, no answer); raise max_tokens or use a non-thinking model")
+                    } else {
+                        "empty reply".to_string()
+                    });
                 }
                 Ok((msg, v["model"].as_str().filter(|m| !m.is_empty()).map(str::to_string), v["choices"][0]["finish_reason"].as_str().map(str::to_string)))
             }
