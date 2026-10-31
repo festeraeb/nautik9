@@ -1,7 +1,112 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+/// Whether the device has a network path right now (set by the app from the phone's
+/// connectivity state; defaults to online). When offline, non-`offline` providers are
+/// skipped at once instead of waiting on connect timeouts.
+static NET_ONLINE: AtomicBool = AtomicBool::new(true);
+/// Whether the phone has a Tailscale address (100.64.0.0/10). Providers on the tailnet are
+/// skipped with a plain message when it is off, instead of timing out on mobile data.
+static NET_TAILSCALE: AtomicBool = AtomicBool::new(true);
+/// Unix seconds of the last request sent to an `offline` (local) provider, 0 = never.
+static LOCAL_MODEL_LAST_USE: AtomicU64 = AtomicU64::new(0);
+
+pub fn set_online(online: bool) {
+    NET_ONLINE.store(online, Ordering::Relaxed);
+}
+
+pub fn is_online() -> bool {
+    NET_ONLINE.load(Ordering::Relaxed)
+}
+
+/// Model the user picked for remote (non-offline) providers: None or "auto" = the provider's
+/// own default (a router's "auto" picks per request). Set from the page's model picker.
+static PREFERRED_MODEL: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
+pub fn set_preferred_model(m: Option<&str>) {
+    let v = m.map(str::trim).filter(|m| !m.is_empty() && *m != "auto").map(str::to_string);
+    if let Ok(mut g) = PREFERRED_MODEL.write() {
+        *g = v;
+    }
+}
+
+pub fn preferred_model() -> Option<String> {
+    PREFERRED_MODEL.read().ok().and_then(|g| g.clone())
+}
+
+pub fn set_tailscale(up: bool) {
+    NET_TAILSCALE.store(up, Ordering::Relaxed);
+}
+
+pub fn is_tailscale() -> bool {
+    NET_TAILSCALE.load(Ordering::Relaxed)
+}
+
+/// Plain text for a home endpoint that is only reachable over Tailscale while it is off.
+pub const HOME_UNREACHABLE_MESSAGE: &str = "can't reach home: Tailscale is off on the phone";
+
+/// A 2-second TCP connect to the provider's host:port. A tailnet address with Tailscale stopped
+/// (or the VPN interface up but not connected) otherwise hangs for minutes before failing.
+pub async fn tcp_reachable(url: &str, timeout: Duration) -> bool {
+    let rest = url.split("//").nth(1).unwrap_or(url);
+    let hostport = rest.split('/').next().unwrap_or("");
+    let (host, port) = match hostport.rsplit_once(':') {
+        Some((h, p)) => (h.to_string(), p.parse::<u16>().unwrap_or(80)),
+        None => (hostport.to_string(), if url.starts_with("https") { 443 } else { 80 }),
+    };
+    matches!(tokio::time::timeout(timeout, tokio::net::TcpStream::connect((host.as_str(), port))).await, Ok(Ok(_)))
+}
+
+/// True for a URL whose host is a Tailscale (CGNAT 100.64.0.0/10) address.
+pub fn is_tailnet_url(url: &str) -> bool {
+    let host = url.split("//").nth(1).unwrap_or(url).split(['/', ':']).next().unwrap_or("");
+    let mut it = host.split('.');
+    match (it.next().and_then(|a| a.parse::<u8>().ok()), it.next().and_then(|b| b.parse::<u8>().ok())) {
+        (Some(100), Some(b)) => (64..128).contains(&b),
+        _ => false,
+    }
+}
+
+/// Plain text for a tool or feature that cannot work without a connection.
+pub const OFFLINE_MESSAGE: &str = "This needs an internet connection and the phone is offline right now.";
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// Record that the local (on-device) model was just asked something.
+pub fn note_local_model_use() {
+    LOCAL_MODEL_LAST_USE.store(now_secs(), Ordering::Relaxed);
+}
+
+/// Seconds since the local model was last asked; None if it has not been asked since start.
+pub fn local_model_idle_seconds() -> Option<u64> {
+    match LOCAL_MODEL_LAST_USE.load(Ordering::Relaxed) {
+        0 => None,
+        t => Some(now_secs().saturating_sub(t)),
+    }
+}
+
+/// Providers to try for this request: `offline_only` keeps only local ones; when the device
+/// is offline, remote ones are listed in `skipped` instead of being tried.
+fn plan_chain<'a>(providers: &'a [Provider], offline_only: bool) -> (Vec<&'a Provider>, Vec<String>) {
+    let online = is_online();
+    let mut chain = Vec::new();
+    let mut skipped = Vec::new();
+    for p in providers.iter().filter(|p| !offline_only || p.offline) {
+        if !p.offline && !online {
+            skipped.push(format!("{} ({}): skipped, the phone is offline", p.name, p.base_url));
+        } else if !p.offline && !is_tailscale() && is_tailnet_url(&p.base_url) {
+            skipped.push(format!("{} ({}): skipped, {}", p.name, p.base_url, HOME_UNREACHABLE_MESSAGE));
+        } else {
+            chain.push(p);
+        }
+    }
+    (chain, skipped)
+}
 
 use nautik9_core::{
     error::NautikError,
@@ -140,6 +245,8 @@ pub struct RawAnswer {
     pub endpoint: String,
     pub finish_reason: Option<String>,
     pub duration_ms: u64,
+    /// A router's X-Routed-Lane header (which backend lane answered), if it sent one.
+    pub lane: Option<String>,
 }
 
 /// Every endpoint failed. Carries one line per attempt; never an invented reply.
@@ -186,6 +293,11 @@ impl LemonadeModule {
     /// Model to request from `p`: the configured one, else the one the server
     /// reports as loaded (lemond health), else the first listed by /models.
     async fn resolve_model(&self, p: &Provider) -> Result<String, String> {
+        if !p.offline {
+            if let Some(m) = preferred_model() {
+                return Ok(m);
+            }
+        }
         if let Some(m) = &p.model {
             return Ok(m.clone());
         }
@@ -244,6 +356,7 @@ impl LemonadeModule {
         if !resp.status().is_success() {
             return Err(format!("HTTP {}", resp.status().as_u16()));
         }
+        let routed = resp.headers().get("x-routed-model").and_then(|h| h.to_str().ok()).map(str::to_string).filter(|m| !m.is_empty());
         let body: ChatCompletionResponse = resp.json().await.map_err(|e| format!("bad response: {}", short_err(&e)))?;
         let text = body
             .choices
@@ -251,8 +364,8 @@ impl LemonadeModule {
             .and_then(|c| c.message.as_ref())
             .map(|m| m.content.trim().to_string())
             .filter(|t| !t.is_empty())
-            .ok_or_else(|| "empty reply".to_string())?;
-        Ok((text, body.model.filter(|m| !m.is_empty()).unwrap_or(model)))
+            .ok_or_else(|| "empty reply (a thinking model may have used the whole token budget on reasoning)".to_string())?;
+        Ok((text, routed.or(body.model.filter(|m| !m.is_empty() && m != "auto")).unwrap_or(model)))
     }
 
     /// Ask the chain. `offline_only` restricts to providers marked `offline`.
@@ -265,24 +378,26 @@ impl LemonadeModule {
     ) -> Result<ChatAnswer, ChatFailure> {
         let start = Instant::now();
         let sys = system_prompt.unwrap_or("You are Mighty Mack, a NautiDog and helpful companion (sometimes).");
-        let chain: Vec<&Provider> = self
-            .config
-            .providers
-            .iter()
-            .filter(|p| !offline_only || p.offline)
-            .collect();
+        let (chain, mut attempts) = plan_chain(&self.config.providers, offline_only);
         if chain.is_empty() {
             return Err(ChatFailure {
                 error: if offline_only {
                     "no offline endpoint is configured".to_string()
+                } else if !attempts.is_empty() {
+                    "the phone is offline and no on-device model is configured".to_string()
                 } else {
                     "no model endpoint is configured".to_string()
                 },
-                attempts: vec![],
+                attempts,
             });
         }
-        let mut attempts = Vec::new();
         for p in chain {
+            if p.offline {
+                note_local_model_use();
+            } else if is_tailnet_url(&p.base_url) && !tcp_reachable(&p.base_url, Duration::from_secs(2)).await {
+                attempts.push(format!("{} ({}): skipped, can't reach home (no answer in 2 s; is Tailscale connected?)", p.name, p.base_url));
+                continue;
+            }
             match self.try_provider(p, sys, prompt).await {
                 Ok((reply, model)) => {
                     return Ok(ChatAnswer {
@@ -313,12 +428,18 @@ impl LemonadeModule {
         offline_only: bool,
     ) -> Result<RawAnswer, ChatFailure> {
         let start = Instant::now();
-        let chain: Vec<&Provider> = self.config.providers.iter().filter(|p| !offline_only || p.offline).collect();
+        let (chain, mut attempts) = plan_chain(&self.config.providers, offline_only);
         if chain.is_empty() {
-            return Err(ChatFailure { error: "no model endpoint is configured".to_string(), attempts: vec![] });
+            let error = if attempts.is_empty() { "no model endpoint is configured" } else { "the phone is offline and no on-device model is configured" };
+            return Err(ChatFailure { error: error.to_string(), attempts });
         }
-        let mut attempts = Vec::new();
         for p in chain {
+            if p.offline {
+                note_local_model_use();
+            } else if is_tailnet_url(&p.base_url) && !tcp_reachable(&p.base_url, Duration::from_secs(2)).await {
+                attempts.push(format!("{} ({}): skipped, can't reach home (no answer in 2 s; is Tailscale connected?)", p.name, p.base_url));
+                continue;
+            }
             let model = match self.resolve_model(p).await {
                 Ok(m) => m,
                 Err(e) => {
@@ -337,6 +458,9 @@ impl LemonadeModule {
             let res = async {
                 let resp = self.authed(self.client.post(&url), p).json(&body).send().await.map_err(|e| short_err(&e))?;
                 let status = resp.status();
+                // A router says which model really answered in this header; the body's "model" may be "auto".
+                let routed = resp.headers().get("x-routed-model").and_then(|h| h.to_str().ok()).map(str::to_string).filter(|m| !m.is_empty());
+                let lane = resp.headers().get("x-routed-lane").and_then(|h| h.to_str().ok()).map(str::to_string).filter(|m| !m.is_empty());
                 let v: serde_json::Value = resp.json().await.map_err(|e| format!("bad response: {}", short_err(&e)))?;
                 if !status.is_success() {
                     let msg = v["error"]["message"].as_str().or(v["error"].as_str()).unwrap_or("");
@@ -346,13 +470,18 @@ impl LemonadeModule {
                 let has_text = msg["content"].as_str().is_some_and(|t| !t.trim().is_empty());
                 let has_calls = msg["tool_calls"].as_array().is_some_and(|a| !a.is_empty());
                 if !has_text && !has_calls {
-                    return Err("empty reply".to_string());
+                    let thought = msg["reasoning_content"].as_str().map(str::len).unwrap_or(0);
+                    return Err(if thought > 0 {
+                        format!("empty reply: the model spent its whole token budget thinking ({thought} characters of reasoning, no answer); raise max_tokens or use a non-thinking model")
+                    } else {
+                        "empty reply".to_string()
+                    });
                 }
-                Ok((msg, v["model"].as_str().filter(|m| !m.is_empty()).map(str::to_string), v["choices"][0]["finish_reason"].as_str().map(str::to_string)))
+                Ok((msg, routed.or_else(|| v["model"].as_str().filter(|m| !m.is_empty() && *m != "auto").map(str::to_string)), v["choices"][0]["finish_reason"].as_str().map(str::to_string), lane))
             }
             .await;
             match res {
-                Ok((message, m, finish_reason)) => {
+                Ok((message, m, finish_reason, lane)) => {
                     return Ok(RawAnswer {
                         message,
                         model: m.unwrap_or(model),
@@ -360,12 +489,33 @@ impl LemonadeModule {
                         endpoint: p.base_url.clone(),
                         finish_reason,
                         duration_ms: start.elapsed().as_millis() as u64,
+                        lane,
                     })
                 }
                 Err(e) => attempts.push(format!("{} ({}): {}", p.name, p.base_url, e)),
             }
         }
         Err(ChatFailure { error: "no model endpoint answered".to_string(), attempts })
+    }
+
+    /// Model ids the first remote (non-offline) provider lists at `/models`, for a picker.
+    /// Returns (provider name, ids) or the real error.
+    pub async fn list_remote_models(&self) -> Result<(String, Vec<String>), String> {
+        let p = self.config.providers.iter().find(|p| !p.offline).ok_or("no remote provider configured")?;
+        if !is_online() {
+            return Err(OFFLINE_MESSAGE.to_string());
+        }
+        if !is_tailscale() && is_tailnet_url(&p.base_url) {
+            return Err(HOME_UNREACHABLE_MESSAGE.to_string());
+        }
+        let url = format!("{}/models", p.base_url.trim_end_matches('/'));
+        let resp = self.authed(self.client.get(&url), p).send().await.map_err(|e| format!("{}: {}", p.name, short_err(&e)))?;
+        if !resp.status().is_success() {
+            return Err(format!("{}: HTTP {}", p.name, resp.status().as_u16()));
+        }
+        let v: serde_json::Value = resp.json().await.map_err(|e| format!("{}: {}", p.name, short_err(&e)))?;
+        let ids = v["data"].as_array().map(|a| a.iter().filter_map(|m| m["id"].as_str().map(str::to_string)).collect()).unwrap_or_default();
+        Ok((p.name.clone(), ids))
     }
 
     /// Draft an SMS reply. `is_owner` selects the prompt; `vault_context` is
@@ -603,6 +753,15 @@ mod tests {
         }
         let (sys, _) = build_sms_prompts(&req(false, None));
         assert!(sys.contains("Sam is busy right now and will reply later"));
+    }
+
+    #[test]
+    fn tailnet_urls_are_recognised() {
+        assert!(is_tailnet_url("http://100.65.31.48:13305/v1"));
+        assert!(is_tailnet_url("https://100.127.0.1/v1"));
+        assert!(!is_tailnet_url("http://100.1.2.3/v1"));
+        assert!(!is_tailnet_url("http://127.0.0.1:8341/v1"));
+        assert!(!is_tailnet_url("https://cesarops.com/lemonade/v1"));
     }
 
     #[test]

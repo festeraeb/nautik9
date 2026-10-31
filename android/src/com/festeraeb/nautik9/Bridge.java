@@ -231,7 +231,6 @@ final class Bridge {
                 o.put("done_mb", p[1] / 1_000_000);
                 o.put("size_mb", p[2] / 1_000_000);
             } else if (model != null) {
-                if (!engines.llmRunning()) engines.startLlmIfModel();
                 o.put("state", "ready");
                 o.put("file", model.getName());
                 o.put("size_mb", model.length() / 1_000_000);
@@ -244,6 +243,129 @@ final class Bridge {
             return error(e.toString());
         }
         return o.toString();
+    }
+
+    /** Start the on-device model if it is not running (returns at once; poll offlineModelStatus). */
+    @JavascriptInterface
+    public void ensureOfflineModel() {
+        engines.ensureLlm();
+    }
+
+    /** Stop the on-device model now (it restarts on demand). */
+    @JavascriptInterface
+    public void stopOfflineModel() {
+        engines.stopLlm();
+    }
+
+    /**
+     * The phone's connectivity: {"online":bool,"transport":"wifi|cell|ethernet|vpn|none",
+     * "metered":bool}. "online" means the active network reached the internet (validated).
+     */
+    @JavascriptInterface
+    public String network() {
+        return networkJson(ctx);
+    }
+
+    static String networkJson(Context ctx) {
+        try {
+            android.net.ConnectivityManager cm = (android.net.ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+            JSONObject o = new JSONObject();
+            // A VPN (Tailscale) is "validated" long after the real link is gone (airplane mode still
+            // showed ONLINE VPN), so online means: some non-VPN network reaches the internet.
+            boolean internet = false, vpn = false;
+            String t = "none";
+            for (android.net.Network n : cm.getAllNetworks()) {
+                android.net.NetworkCapabilities c = cm.getNetworkCapabilities(n);
+                if (c == null) continue;
+                if (c.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)) { vpn = true; continue; }
+                boolean ok = c.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                        && c.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+                if (!ok) continue;
+                String tt = c.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ? "wifi"
+                        : c.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) ? "cell"
+                        : c.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) ? "ethernet" : "other";
+                // Prefer Wi-Fi over cell when both are up.
+                if (!internet || tt.equals("wifi")) { t = tt; o.put("metered", !c.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED)); }
+                internet = true;
+            }
+            if (!internet) o.put("metered", false);
+            return o.put("online", internet).put("transport", t)
+                    .put("tailscale", vpn).put("tailscale_installed", installed(ctx, "com.tailscale.ipn")).toString();
+        } catch (Exception e) {
+            return error(e.toString());
+        }
+    }
+
+    /**
+     * True when a VPN network (Tailscale) is up. Interface addresses are not enough: a mobile
+     * carrier's own CGNAT address is also in 100.64.0.0/10.
+     */
+    static boolean tailscaleUp(Context ctx) {
+        try {
+            android.net.ConnectivityManager cm = (android.net.ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+            for (android.net.Network n : cm.getAllNetworks()) {
+                android.net.NetworkCapabilities c = cm.getNetworkCapabilities(n);
+                if (c != null && c.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)) return true;
+            }
+        } catch (RuntimeException ignored) {
+        }
+        return false;
+    }
+
+    static boolean installed(Context ctx, String pkg) {
+        try {
+            ctx.getPackageManager().getPackageInfo(pkg, 0);
+            return true;
+        } catch (PackageManager.NameNotFoundException e) {
+            return false;
+        }
+    }
+
+    /**
+     * HTTP to the app's own server from Java, for when the WebView refuses loopback requests
+     * (airplane mode: Chromium reports "Failed to fetch" even for 127.0.0.1). The page gets the
+     * answer as window.n9OnHttp(id, status, bodyText). Only paths on the local server are allowed.
+     */
+    @JavascriptInterface
+    public void httpAsync(String id, String method, String path, String contentType, String body) {
+        new Thread(() -> {
+            int status = 0;
+            String text;
+            try {
+                if (!path.startsWith("/")) throw new java.io.IOException("only local paths");
+                HttpURLConnection c = (HttpURLConnection) new URL("http://127.0.0.1:" + Engines.SERVER_PORT + path).openConnection();
+                c.setRequestMethod(method);
+                c.setConnectTimeout(3000);
+                c.setReadTimeout(600_000);
+                c.setRequestProperty("Authorization", "Bearer " + engines.token());
+                if (body != null && !body.isEmpty()) {
+                    c.setDoOutput(true);
+                    c.setRequestProperty("Content-Type", contentType == null || contentType.isEmpty() ? "application/json" : contentType);
+                    try (java.io.OutputStream out = c.getOutputStream()) {
+                        out.write(body.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    }
+                }
+                status = c.getResponseCode();
+                java.io.InputStream in = status >= 400 ? c.getErrorStream() : c.getInputStream();
+                java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+                if (in != null) {
+                    byte[] b = new byte[8192];
+                    for (int n; (n = in.read(b)) > 0; ) buf.write(b, 0, n);
+                    in.close();
+                }
+                text = buf.toString("UTF-8");
+            } catch (Exception e) {
+                text = e.toString();
+            }
+            final int st = status;
+            final String payload;
+            try {
+                payload = new JSONObject().put("id", id).put("status", st).put("body", text).toString();
+            } catch (JSONException e) {
+                return;
+            }
+            if (web != null) web.post(() -> web.evaluateJavascript("window.n9OnHttp&&window.n9OnHttp(" + payload + ")", null));
+        }, "http-" + id).start();
     }
 
     @JavascriptInterface

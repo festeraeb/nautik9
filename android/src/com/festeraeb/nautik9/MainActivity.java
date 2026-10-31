@@ -16,6 +16,8 @@ public class MainActivity extends Activity {
     private static final String HOME = "http://127.0.0.1:" + Engines.SERVER_PORT;
     private WebView web;
     private Bridge bridge;
+    private android.net.ConnectivityManager.NetworkCallback netWatch;
+    private android.net.ConnectivityManager.NetworkCallback vpnWatch;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -32,6 +34,8 @@ public class MainActivity extends Activity {
         bridge = new Bridge(this, Engines.get(this));
         bridge.attach(web);
         web.addJavascriptInterface(bridge, "NautiK9Android");
+        // The page talks to a server on this phone; it must keep working with no network at all.
+        web.setNetworkAvailable(true);
         web.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
@@ -57,7 +61,58 @@ public class MainActivity extends Activity {
         }
         if (!ask.isEmpty()) requestPermissions(ask.toArray(new String[0]), 1);
         startForegroundService(new Intent(this, EngineService.class));
+        watchNetwork();
         start();
+    }
+
+    /** Tell the page when the phone goes online or offline: window.n9OnNetwork({online, transport, metered}). */
+    private void watchNetwork() {
+        android.net.ConnectivityManager cm = (android.net.ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+        netWatch = new android.net.ConnectivityManager.NetworkCallback() {
+            private void push() {
+                String json = Bridge.networkJson(MainActivity.this);
+                runOnUiThread(() -> { if (web != null) web.evaluateJavascript("window.n9OnNetwork&&window.n9OnNetwork(" + json + ")", null); });
+            }
+            @Override public void onAvailable(android.net.Network n) { push(); }
+            @Override public void onLost(android.net.Network n) { push(); }
+            @Override public void onCapabilitiesChanged(android.net.Network n, android.net.NetworkCapabilities c) { push(); }
+        };
+        try {
+            cm.registerDefaultNetworkCallback(netWatch);
+            // A VPN (Tailscale) coming or going does not change the default network: watch it too.
+            vpnWatch = new android.net.ConnectivityManager.NetworkCallback() {
+                private void push() {
+                    String json = Bridge.networkJson(MainActivity.this);
+                    runOnUiThread(() -> { if (web != null) web.evaluateJavascript("window.n9OnNetwork&&window.n9OnNetwork(" + json + ")", null); });
+                }
+                @Override public void onAvailable(android.net.Network n) { push(); }
+                @Override public void onLost(android.net.Network n) { push(); }
+            };
+            cm.registerNetworkCallback(new android.net.NetworkRequest.Builder()
+                    .addTransportType(android.net.NetworkCapabilities.TRANSPORT_VPN)
+                    .removeCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VPN).build(), vpnWatch);
+        } catch (RuntimeException e) {
+            netWatch = null;
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        android.net.ConnectivityManager cm = (android.net.ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+        for (android.net.ConnectivityManager.NetworkCallback cb : new android.net.ConnectivityManager.NetworkCallback[] {netWatch, vpnWatch}) {
+            if (cb == null) continue;
+            try {
+                cm.unregisterNetworkCallback(cb);
+            } catch (RuntimeException ignored) {
+            }
+        }
+        // The user closed the app (swiped it away or pressed back out): stop the model and the
+        // server so nothing runs in the background. A rotation or theme change keeps them.
+        if (isFinishing()) {
+            Engines.get(this).stopAll();
+            stopService(new Intent(this, EngineService.class));
+        }
+        super.onDestroy();
     }
 
     private final java.util.concurrent.atomic.AtomicBoolean starting = new java.util.concurrent.atomic.AtomicBoolean();

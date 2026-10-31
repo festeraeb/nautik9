@@ -927,11 +927,13 @@
                 <div class="vessel-title-row">
                     <div class="vessel-title">Mighty Mack • Thom's NautiDog 🐾</div>
                     <span class="vessel-badge" id="hostBadge">WEB</span>
+                    <span class="vessel-badge" id="netBadge">...</span>
                 </div>
                 <div class="status-pill" id="avatarBadge">
                     <span class="pulse-light"></span>
                     <span id="avatarStateText">Mack is on watch</span>
                 </div>
+                <div id="netNote" style="font-size:0.72rem;color:var(--rose);margin-top:4px;"></div>
             </div>
         </div>
 
@@ -996,6 +998,11 @@
                 Asked in this order; the first that answers wins. If none answer you get an error, never an invented reply. Edit providers.json in the config folder to change the list.
             </p>
             <div id="providersList" style="display:flex;flex-direction:column;gap:8px;"></div>
+            <div style="margin-top:10px;font-size:0.85rem;">
+                <label for="modelPick">Home model:</label>
+                <select id="modelPick" onchange="pickModel(this.value)" style="max-width:100%;background:#0b1220;color:#e2e8f0;border:1px solid var(--border);border-radius:8px;padding:4px;"><option value="auto">Auto (smart)</option></select>
+                <div id="modelPickNote" style="color:var(--text-sub);font-size:0.75rem;margin-top:3px;"></div>
+            </div>
             <div id="offlineModelBox" style="display:none;margin-top:10px;font-size:0.85rem;"></div>
         </div>
 
@@ -1309,10 +1316,28 @@
             if (url.startsWith('/')) {
                 init.headers = Object.assign({}, init.headers || {}, { 'Authorization': 'Bearer ' + getToken() });
             }
-            const res = await _fetch(input, init);
+            let res;
+            try {
+                res = await _fetch(input, init);
+            } catch (e) {
+                // Airplane mode: the WebView refuses even loopback requests ("Failed to fetch").
+                // The app then does the request from Java and hands the answer back.
+                if (!(url.startsWith('/') && window.NautiK9Android && window.NautiK9Android.httpAsync)) throw e;
+                res = await bridgeFetch(url, init);
+            }
             if (res.status === 401 && url.startsWith('/api/') && url !== '/api/health') showTokenPrompt();
             return res;
         };
+        const n9HttpWaiters = {};
+        window.n9OnHttp = r => { const w = n9HttpWaiters[r.id]; if (w) { delete n9HttpWaiters[r.id]; w(r); } };
+        function bridgeFetch(url, init) {
+            return new Promise(resolve => {
+                const id = 'h' + Date.now() + Math.random().toString(16).slice(2);
+                n9HttpWaiters[id] = r => resolve(new Response(r.status ? r.body : '', { status: r.status || 503, headers: { 'Content-Type': 'application/json' } }));
+                const h = init.headers || {};
+                window.NautiK9Android.httpAsync(id, (init.method || 'GET').toUpperCase(), url, h['Content-Type'] || '', typeof init.body === 'string' ? init.body : '');
+            });
+        }
         function showTokenPrompt() {
             if (document.getElementById('tokenBanner')) return;
             const b = document.createElement('div');
@@ -1364,10 +1389,14 @@
             let st = {};
             try { st = JSON.parse(AppBridge.offlineModelStatus()); } catch (e) {}
             if (st.state === 'ready') {
-                box.innerHTML = `On-device model: <b>${esc(st.file)}</b> (${esc(st.size_mb)} MB), ${st.running ? 'running' : 'not running'}`;
+                box.innerHTML = `On-device model: <b>${esc(st.file)}</b> (${esc(st.size_mb)} MB), ` +
+                    (st.running ? 'running (stops after 10 idle minutes) <button class="btn" onclick="AppBridge.stopOfflineModel();setTimeout(renderOfflineModel,800)">Stop now</button>'
+                                : 'asleep, wakes when asked <button class="btn" onclick="wakeModel(t=>{document.getElementById(\'offlineModelBox\').innerText=t}).then(renderOfflineModel)">Wake</button>');
             } else if (st.state === 'downloading') {
                 box.innerHTML = `On-device model downloading: ${esc(st.done_mb)} / ${esc(st.size_mb)} MB`;
                 setTimeout(renderOfflineModel, 3000);
+            } else if (!netState.online) {
+                box.innerHTML = `No on-device model yet, and downloading it (${esc(st.default_size_mb || '?')} MB) needs a connection.`;
             } else {
                 box.innerHTML = `No on-device model yet, so with no network nothing can answer. ` +
                     `<button class="btn" onclick="AppBridge.downloadOfflineModel();setTimeout(renderOfflineModel,1500)">Download ${esc(st.default_name || 'model')} (${esc(st.default_size_mb || '?')} MB)</button>`;
@@ -1411,6 +1440,81 @@
             if (!b || typeof b[name] !== 'function') return null;
             try { return JSON.parse(b[name](...args)); } catch (e) { return { error: String(e) }; }
         }
+        // ---- Online / offline ----
+        // The app reports the phone's connectivity; the server then skips remote endpoints and web
+        // tools at once with a plain message. In a browser, navigator.onLine is the best we have.
+        let netState = { online: true, transport: 'unknown', metered: false };
+        function applyNet(n) {
+            if (!n || n.error) return;
+            netState = n;
+            const badge = document.getElementById('netBadge');
+            if (badge) {
+                badge.innerText = n.online ? ('ONLINE ' + (n.transport || '').toUpperCase()).trim() : 'OFFLINE';
+                badge.style.color = n.online ? 'var(--emerald)' : 'var(--rose)';
+                badge.style.borderColor = n.online ? 'var(--emerald)' : 'var(--rose)';
+            }
+            updateNetNote();
+            const body = { online: !!n.online };
+            if (typeof n.tailscale === 'boolean') body.tailscale = n.tailscale;
+            fetch('/api/net', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => {});
+            if (typeof renderOfflineModel === 'function') renderOfflineModel();
+        }
+        // Home endpoints on the tailnet (100.64.0.0/10) need Tailscale on the phone; say so plainly.
+        let providerUrls = [];
+        const isTailnetUrl = u => { const m = /\/\/(\d+)\.(\d+)\./.exec(u || ''); return !!m && m[1] === '100' && +m[2] >= 64 && +m[2] < 128; };
+        function updateNetNote() {
+            const note = document.getElementById('netNote');
+            if (!note) return;
+            const n = netState;
+            if (!n.online) { note.innerText = 'No connection: notes, search, texts, GPS, torch and the on-device model work; web, weather, fleet and the home Lemonade need a connection.'; return; }
+            const homeOnTailnet = providerUrls.some(isTailnetUrl);
+            if (homeOnTailnet && n.tailscale === false) {
+                note.innerText = "Can't reach home: Tailscale is off on the phone" + (n.tailscale_installed === false ? ' (not installed)' : '') + (n.transport === 'cell' ? '. On mobile data only the on-device model answers until it is on.' : '.');
+                return;
+            }
+            note.innerText = '';
+        }
+        window.n9OnNetwork = applyNet;
+        function readNet() {
+            const r = bridgeCall('network');
+            applyNet(r || { online: navigator.onLine !== false, transport: 'browser', metered: false });
+        }
+        window.addEventListener('online', readNet);
+        window.addEventListener('offline', readNet);
+
+        // Wake the on-device model (stopped after 10 idle minutes) and wait until it answers.
+        async function wakeModel(onStatus) {
+            const b = window.NautiK9Android;
+            if (!b || !b.ensureOfflineModel) return false;
+            let st = bridgeCall('offlineModelStatus') || {};
+            if (st.state !== 'ready') return false;
+            if (st.running) return true;
+            b.ensureOfflineModel();
+            for (let i = 0; i < 60; i++) {
+                if (onStatus) onStatus('Waking the on-device model... ' + (i * 0.5).toFixed(0) + 's');
+                await new Promise(r => setTimeout(r, 500));
+                st = bridgeCall('offlineModelStatus') || {};
+                if (st.running) { if (typeof renderOfflineModel === 'function') renderOfflineModel(); return true; }
+            }
+            return false;
+        }
+        const localDown = d => JSON.stringify(d && (d.attempts || d.message && d.message.draft_error) || '').match(/on-device[^"]*(refused|unreachable)/);
+        // A model request. Offline (or offline toggle): the on-device model is woken first. Online: the
+        // chain runs as configured; if the on-device entry was asleep and nothing else answered, it is
+        // woken and the request sent once more.
+        async function modelFetch(url, init, onStatus, forceLocal) {
+            readNet(); // fresh online/Tailscale state before every model request (a VPN can drop without a network change)
+            if (forceLocal || !netState.online) await wakeModel(onStatus);
+            let res = await fetch(url, init);
+            let data = null;
+            try { data = await res.clone().json(); } catch (e) {}
+            if (!res.ok && localDown(data) && await wakeModel(onStatus)) {
+                if (onStatus) onStatus('Mack is working...');
+                res = await fetch(url, init);
+            }
+            return res;
+        }
+
         // Silent pulse for every button press; the Haptic Pulse button reports what happened.
         function playHaptic(report) {
             const r = bridgeCall('vibrate', '60,40,60');
@@ -1471,11 +1575,11 @@
             planContainer.innerHTML = '';
 
             try {
-                const res = await fetch('/api/tot', {
+                const res = await modelFetch('/api/tot', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ problem: prob, budget: 12 })
-                });
+                }, t => { container.innerHTML = '<div style="font-size:0.85rem;color:#38bdf8;padding:12px;text-align:center;">' + esc(t) + '</div>'; });
                 const data = await res.json();
                 container.innerHTML = '';
                 if (!res.ok || !data.nodes) {
@@ -1874,11 +1978,11 @@
             statusEl.innerText = "Drafting...";
             statusEl.style.color = "var(--accent)";
             try {
-                const res = await fetch('/api/sms/incoming', {
+                const res = await modelFetch('/api/sms/incoming', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ sender, body })
-                });
+                }, t => { statusEl.innerText = t; });
                 const data = await res.json();
                 if (data.message.status === 'NoModel') {
                     statusEl.innerText = 'No draft: ' + (data.message.draft_error || 'no model endpoint answered');
@@ -1903,11 +2007,11 @@
             statusEl.innerText = "Opening the phone SMS composer...";
             statusEl.style.color = "var(--gold)";
             try {
-                const res = await fetch('/api/sms/incoming', {
+                const res = await modelFetch('/api/sms/incoming', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ sender, body })
-                });
+                }, t => { statusEl.innerText = t; });
                 const data = await res.json();
                 if (data.message && data.message.id) {
                     const actRes = await fetch('/api/sms/action', {
@@ -1938,7 +2042,7 @@
                 const res = await fetch('/api/fleet/status');
                 const data = await res.json();
                 if (!res.ok || data.ok === false) {
-                    src.innerText = 'Fleet aggregator error: ' + (data.error || ('HTTP ' + res.status));
+                    src.innerText = data.offline ? 'Fleet Deck needs a connection: ' + data.error : 'Fleet aggregator error: ' + (data.error || ('HTTP ' + res.status));
                     src.style.color = 'var(--rose)';
                     document.getElementById('swarmClusterStatus').innerText = 'NO DATA';
                     grid.innerHTML = '';
@@ -1977,6 +2081,25 @@
             }
         }
 
+        // Model picker: "Auto (smart)" lets the home router choose per request; an id goes straight to it.
+        async function loadModelPicker() {
+            const sel = document.getElementById('modelPick');
+            if (!sel) return;
+            let saved = 'auto';
+            try { saved = localStorage.getItem('nautik9_model') || 'auto'; } catch (e) {}
+            if (saved !== 'auto') fetch('/api/model', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: saved }) }).catch(() => {});
+            let d = { models: [] };
+            try { d = await (await fetch('/api/models')).json(); } catch (e) {}
+            sel.innerHTML = '<option value="auto">Auto (smart)</option>' + (d.models || []).map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('');
+            if (saved !== 'auto' && !(d.models || []).includes(saved)) sel.innerHTML += `<option value="${esc(saved)}">${esc(saved)} (not listed now)</option>`;
+            sel.value = saved;
+            const note = document.getElementById('modelPickNote');
+            if (note) note.innerText = d.ok ? `${d.models.length} model(s) from ${d.provider}` : ('Model list unavailable: ' + (d.error || 'no remote provider'));
+        }
+        async function pickModel(v) {
+            try { localStorage.setItem('nautik9_model', v); } catch (e) {}
+            await fetch('/api/model', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: v }) }).catch(() => {});
+        }
         async function loadDeviceAndProviders() {
             try {
                 const st = await (await fetch('/api/status')).json();
@@ -1987,7 +2110,10 @@
             } catch (e) {}
             try {
                 const pr = await (await fetch('/api/providers')).json();
+                providerUrls = pr.providers.map(p => p.base_url);
+                updateNetNote();
                 document.getElementById('providersBadge').innerText = pr.providers.length + ' endpoint(s)';
+                loadModelPicker();
                 document.getElementById('providersList').innerHTML = pr.providers.map((p, i) => `
                     <div class="node-mini-card">
                         <div class="node-name"><span>${i + 1}. ${esc(p.name)}</span>${p.offline ? '<span class="badge-status status-pending">OFFLINE-OK</span>' : ''}</div>
@@ -2009,7 +2135,7 @@
         function renderAgentReply(el, r) {
             const tools = (r.tool_calls || []).map(t => `${t.ok ? '✓' : '✗'} ${t.name}`).join('  ');
             el.innerText = (r.reply || ('⚠ ' + r.stopped)) +
-                (tools ? `\n\n🔧 ${tools}` : '') + `\n[${r.model} via ${r.provider} • ${r.steps} step(s)]`;
+                (tools ? `\n\n🔧 ${tools}` : '') + `\n[${r.model} via ${r.provider}${r.lane ? ' (' + r.lane + ')' : ''} • ${r.steps} step(s)]`;
             document.querySelectorAll('.reply-actions').forEach(n => n.remove()); // Retry only on the latest reply
             const bar = document.createElement('div');
             bar.className = 'reply-actions';
@@ -2055,8 +2181,9 @@
 
             const offline = document.getElementById('offlineToggle').checked;
             try {
+                const say = t => { mackMsg.innerText = t; };
                 if (offline) {
-                    const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: p, offline: true }) });
+                    const res = await modelFetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: p, offline: true }) }, say, true);
                     const data = await res.json();
                     if (!res.ok || data.ok === false) {
                         mackMsg.innerText = 'No offline model answered (' + res.status + '): ' + (data.error || res.statusText) + (data.attempts && data.attempts.length ? '\n' + data.attempts.join('\n') : '');
@@ -2065,7 +2192,7 @@
                         mackMsg.innerText = data.response + `\n\n[${data.model_used} • ${data.duration_ms}ms]`;
                     }
                 } else {
-                    const res = await fetch('/api/agent/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: p, session_id: chatSession }) });
+                    const res = await modelFetch('/api/agent/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: p, session_id: chatSession }) }, say);
                     const data = await res.json();
                     if (!res.ok || data.ok === false) {
                         mackMsg.innerText = 'No model answered (' + res.status + '): ' + (data.error || res.statusText) + (data.attempts && data.attempts.length ? '\n' + data.attempts.join('\n') : '');
@@ -2179,6 +2306,7 @@
         }
 
         // Auto initialization
+        readNet();
         initSensors();
         loadDeviceAndProviders();
         loadNotes();

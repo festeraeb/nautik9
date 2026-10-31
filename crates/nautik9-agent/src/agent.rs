@@ -29,6 +29,7 @@ use std::sync::Arc;
 use crate::tools::{list_skills, memory_bullets, note_by_path, redact, Registry, ToolCtx, MEMORY_PATH};
 
 pub const BASE_INTRO: &str = "You are Mighty Mack, Thom's NautiDog and helpful companion (sometimes). You work inside NautiK9, a private markdown vault. \
+Answer directly from what you know unless the question needs live data (weather, news, prices, the web) or an action (notes, memory, schedules); then use a tool. \
 Use your tools to look things up instead of guessing: search and read notes before answering questions about them, and cite the note paths you used. \
 Ask before deleting or replacing notes the user did not ask you to change. If a tool fails, say so plainly. Never invent facts, results or sources. \
 Your own knowledge stops before today (the date is at the end of this prompt): for weather, news, prices or anything current, use the weather or web_search tool and trust what it returns over what you remember.";
@@ -45,7 +46,7 @@ pub struct AgentConfig {
 
 impl Default for AgentConfig {
     fn default() -> Self {
-        AgentConfig { max_steps: 8, context_chars: 48_000, max_tool_chars: 12_000, memory_k: 8, max_tokens: 2048, delegate_steps: 6 }
+        AgentConfig { max_steps: 4, context_chars: 48_000, max_tool_chars: 12_000, memory_k: 8, max_tokens: 2048, delegate_steps: 6 }
     }
 }
 
@@ -66,6 +67,8 @@ pub struct TurnResult {
     pub model: String,
     pub provider: String,
     pub endpoint: String,
+    /// Router lane that answered (X-Routed-Lane), if any.
+    pub lane: Option<String>,
     pub steps: usize,
     pub tool_calls: Vec<ToolTrace>,
     /// Messages left out of the prompt by the context guard on the last call.
@@ -80,6 +83,23 @@ pub struct Agent {
     pub ctx: ToolCtx,
     pub cfg: AgentConfig,
     learned_budget: AtomicUsize,
+}
+
+/// Whether a user message may need a tool: long or mentioning live data, the web, notes or an
+/// action. Short greetings and plain questions go to the model without tools.
+pub fn needs_tools(msg: &str) -> bool {
+    let m = msg.to_lowercase();
+    if m.chars().count() > 160 {
+        return true;
+    }
+    const HINTS: &[&str] = &[
+        "weather", "forecast", "temperature", "wind", "news", "latest", "today", "tonight", "tomorrow", "now", "current",
+        "price", "search", "look up", "lookup", "find", "google", "web", "http", "www.", "fetch", "read", "open",
+        "note", "vault", "remember", "memory", "memories", "journal", "save", "write", "edit", "delete", "list",
+        "schedule", "remind", "cron", "every ", "at ", "when is", "when did", "where is", "who is", "what is the", "how many",
+        "wreck", "sink", "sank", "tide", "sunset", "sunrise", "map", "distance", "convert", "calculate", "skill", "playbook", "flow", "sms", "text ",
+    ];
+    HINTS.iter().any(|h| m.contains(h))
 }
 
 pub fn strip_html_comments(s: &str) -> String {
@@ -279,14 +299,24 @@ impl Agent {
     }
 
     /// Model + tools until a final answer or the step limit. Appends to `history`.
+    /// A short message that needs no live data or action is sent without the tools array, so a
+    /// router treats it as plain chat (fast path) and the model cannot wander into tools.
     async fn run_loop(&self, system: &Value, history: &mut Vec<Value>, owner: bool, read_only: bool, max_steps: usize) -> Result<(Option<String>, Option<String>, nautik9_lemonade::RawAnswer, usize, Vec<ToolTrace>, usize), ChatFailure> {
         let extra = if owner && !read_only { vec![Self::delegate_schema()] } else { vec![] };
-        let tools = self.tools.schema(owner, read_only, &extra);
+        let all_tools = self.tools.schema(owner, read_only, &extra);
+        let last_user = history.iter().rev().find(|m| m["role"] == "user").and_then(|m| m["content"].as_str()).unwrap_or("");
+        let no_tools = json!([]);
+        let tools = if needs_tools(last_user) { &all_tools } else { &no_tools };
         let mut traces = Vec::new();
         let mut last = None;
         let mut trimmed = 0;
         for step in 1..=max_steps {
-            let (ans, t) = self.call_model(system, history, &tools).await?;
+            // At the cap: one last call with no tools and a plain instruction to answer now.
+            let at_cap = step == max_steps && step > 1;
+            if at_cap {
+                history.push(json!({"role": "user", "content": "Tool steps are used up. Answer now from what you already have, and say plainly what is still unknown."}));
+            }
+            let (ans, t) = self.call_model(system, history, if at_cap { &no_tools } else { tools }).await?;
             trimmed = t;
             let mut msg = ans.message.clone();
             msg.as_object_mut().map(|o| o.retain(|k, _| ["role", "content", "tool_calls"].contains(&k.as_str())));
@@ -352,7 +382,7 @@ impl Agent {
         // Persist what happened, even when the model failed after some tool calls.
         let first_idx = store.append(&sid, &history[before..]).await.map_err(err)?;
         let (reply, stopped, ans, steps, tool_calls, trimmed) = out?;
-        Ok(TurnResult { session_id: sid, reply, stopped, model: ans.model, provider: ans.provider, endpoint: ans.endpoint, steps, tool_calls, trimmed, first_idx })
+        Ok(TurnResult { session_id: sid, reply, stopped, model: ans.model, provider: ans.provider, endpoint: ans.endpoint, lane: ans.lane, steps, tool_calls, trimmed, first_idx })
     }
 }
 

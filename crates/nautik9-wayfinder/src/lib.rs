@@ -278,8 +278,8 @@ impl WayfinderVault {
             }
 
             if score > 0.05 {
-                let snippet = if content.len() > 140 {
-                    format!("{}...", &content[..140])
+                let snippet = if content.chars().count() > 140 {
+                    format!("{}...", content.chars().take(140).collect::<String>())
                 } else {
                     content.clone()
                 };

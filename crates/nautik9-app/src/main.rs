@@ -326,6 +326,9 @@ fn build_router(state: AppState, token: String) -> axum::Router {
         .route("/api/health", get(handle_health))
         .route("/api/status", get(handle_status))
         .route("/api/providers", get(handle_providers))
+        .route("/api/net", get(handle_net_get).post(handle_net_set))
+        .route("/api/models", get(handle_models))
+        .route("/api/model", get(handle_model_get).post(handle_model_set))
         .route("/api/search", post(handle_search))
         .route("/api/chat", post(handle_chat))
         .route("/api/decompose", post(handle_decompose))
@@ -990,11 +993,65 @@ async fn fleet_status_value(fleet_url: &str) -> Result<serde_json::Value, String
     }
 }
 
+/// `GET /api/models`: "auto" plus what the first remote provider lists, for the picker.
+async fn handle_models(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> axum::Json<serde_json::Value> {
+    match state.lemonade.list_remote_models().await {
+        Ok((provider, ids)) => axum::Json(serde_json::json!({ "ok": true, "provider": provider, "models": ids, "selected": nautik9_lemonade::preferred_model().unwrap_or_else(|| "auto".into()) })),
+        Err(e) => axum::Json(serde_json::json!({ "ok": false, "error": e, "models": [], "selected": nautik9_lemonade::preferred_model().unwrap_or_else(|| "auto".into()) })),
+    }
+}
+
+async fn handle_model_get() -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({ "model": nautik9_lemonade::preferred_model().unwrap_or_else(|| "auto".into()) }))
+}
+
+/// `POST /api/model {"model": "auto" | "<id>"}`: the model asked of remote providers.
+async fn handle_model_set(
+    axum::Json(payload): axum::Json<serde_json::Value>,
+) -> axum::Json<serde_json::Value> {
+    nautik9_lemonade::set_preferred_model(payload["model"].as_str());
+    axum::Json(serde_json::json!({ "ok": true, "model": nautik9_lemonade::preferred_model().unwrap_or_else(|| "auto".into()) }))
+}
+
+/// `GET /api/net`: what the server believes about connectivity, and how long the on-device
+/// model has been idle (the app stops it after a while to save battery).
+async fn handle_net_get() -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({
+        "online": nautik9_lemonade::is_online(),
+        "tailscale": nautik9_lemonade::is_tailscale(),
+        "local_model_idle_seconds": nautik9_lemonade::local_model_idle_seconds(),
+    }))
+}
+
+/// `POST /api/net {"online": bool}`: the app reports the phone's connectivity, so remote
+/// providers and web tools fail at once with a plain message instead of waiting on timeouts.
+async fn handle_net_set(
+    axum::Json(payload): axum::Json<serde_json::Value>,
+) -> axum::response::Response {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    match payload["online"].as_bool() {
+        Some(online) => {
+            nautik9_lemonade::set_online(online);
+            if let Some(ts) = payload["tailscale"].as_bool() {
+                nautik9_lemonade::set_tailscale(ts);
+            }
+            axum::Json(serde_json::json!({ "ok": true, "online": online, "tailscale": nautik9_lemonade::is_tailscale() })).into_response()
+        }
+        None => (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({ "ok": false, "error": "missing `online` (bool)" }))).into_response(),
+    }
+}
+
 async fn handle_fleet_status(
     axum::extract::State(state): axum::extract::State<AppState>,
 ) -> axum::response::Response {
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
+    if !nautik9_lemonade::is_online() {
+        return (StatusCode::SERVICE_UNAVAILABLE, axum::Json(serde_json::json!({ "ok": false, "offline": true, "error": nautik9_lemonade::OFFLINE_MESSAGE }))).into_response();
+    }
     match fleet_status_value(&state.fleet_url).await {
         Ok(v) => axum::Json(v).into_response(),
         Err(e) => (StatusCode::BAD_GATEWAY, axum::Json(serde_json::json!({ "ok": false, "error": e }))).into_response(),
