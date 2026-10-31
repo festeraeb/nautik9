@@ -158,13 +158,31 @@ final class Engines {
                     long idleMs = System.currentTimeMillis() - llmStartedAt;
                     Long fromServer = serverIdleSeconds();
                     if (fromServer != null) idleMs = Math.min(idleMs, fromServer * 1000);
-                    if (idleMs > LLM_IDLE_STOP_MS) stopLlm();
+                    if (idleMs > LLM_IDLE_STOP_MS && !llmBusy()) stopLlm();
                 } catch (RuntimeException ignored) {
                 }
             }
         }, "llm-idle");
         idleWatcher.setDaemon(true);
         idleWatcher.start();
+    }
+
+    /** True while llama-server has a slot processing a request (never stop it mid-answer). */
+    private static boolean llmBusy() {
+        try {
+            HttpURLConnection c = (HttpURLConnection) new URL("http://127.0.0.1:" + LLM_PORT + "/slots").openConnection();
+            c.setConnectTimeout(500);
+            c.setReadTimeout(1500);
+            if (c.getResponseCode() != 200) return false;
+            java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+            try (java.io.InputStream in = c.getInputStream()) {
+                byte[] b = new byte[4096];
+                for (int n; (n = in.read(b)) > 0; ) buf.write(b, 0, n);
+            }
+            return buf.toString("UTF-8").contains("\"is_processing\":true");
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     /** Seconds since the server last asked the on-device model, or null if unknown / never. */
