@@ -2117,7 +2117,7 @@
         function renderAgentReply(el, r) {
             const tools = (r.tool_calls || []).map(t => `${t.ok ? '✓' : '✗'} ${t.name}`).join('  ');
             el.innerText = (r.reply || ('⚠ ' + r.stopped)) +
-                (tools ? `\n\n🔧 ${tools}` : '') + `\n[${r.model} via ${r.provider} • ${r.steps} step(s)]`;
+                (tools ? `\n\n🔧 ${tools}` : '') + `\n[${r.model} via ${r.provider}${r.lane ? ' (' + r.lane + ')' : ''} • ${r.steps} step(s)]`;
             document.querySelectorAll('.reply-actions').forEach(n => n.remove()); // Retry only on the latest reply
             const bar = document.createElement('div');
             bar.className = 'reply-actions';

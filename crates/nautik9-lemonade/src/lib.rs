@@ -245,6 +245,8 @@ pub struct RawAnswer {
     pub endpoint: String,
     pub finish_reason: Option<String>,
     pub duration_ms: u64,
+    /// A router's X-Routed-Lane header (which backend lane answered), if it sent one.
+    pub lane: Option<String>,
 }
 
 /// Every endpoint failed. Carries one line per attempt; never an invented reply.
@@ -458,6 +460,7 @@ impl LemonadeModule {
                 let status = resp.status();
                 // A router says which model really answered in this header; the body's "model" may be "auto".
                 let routed = resp.headers().get("x-routed-model").and_then(|h| h.to_str().ok()).map(str::to_string).filter(|m| !m.is_empty());
+                let lane = resp.headers().get("x-routed-lane").and_then(|h| h.to_str().ok()).map(str::to_string).filter(|m| !m.is_empty());
                 let v: serde_json::Value = resp.json().await.map_err(|e| format!("bad response: {}", short_err(&e)))?;
                 if !status.is_success() {
                     let msg = v["error"]["message"].as_str().or(v["error"].as_str()).unwrap_or("");
@@ -474,11 +477,11 @@ impl LemonadeModule {
                         "empty reply".to_string()
                     });
                 }
-                Ok((msg, routed.or_else(|| v["model"].as_str().filter(|m| !m.is_empty() && *m != "auto").map(str::to_string)), v["choices"][0]["finish_reason"].as_str().map(str::to_string)))
+                Ok((msg, routed.or_else(|| v["model"].as_str().filter(|m| !m.is_empty() && *m != "auto").map(str::to_string)), v["choices"][0]["finish_reason"].as_str().map(str::to_string), lane))
             }
             .await;
             match res {
-                Ok((message, m, finish_reason)) => {
+                Ok((message, m, finish_reason, lane)) => {
                     return Ok(RawAnswer {
                         message,
                         model: m.unwrap_or(model),
@@ -486,6 +489,7 @@ impl LemonadeModule {
                         endpoint: p.base_url.clone(),
                         finish_reason,
                         duration_ms: start.elapsed().as_millis() as u64,
+                        lane,
                     })
                 }
                 Err(e) => attempts.push(format!("{} ({}): {}", p.name, p.base_url, e)),
