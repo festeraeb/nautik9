@@ -17,6 +17,7 @@ public class MainActivity extends Activity {
     private WebView web;
     private Bridge bridge;
     private android.net.ConnectivityManager.NetworkCallback netWatch;
+    private android.net.ConnectivityManager.NetworkCallback vpnWatch;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -76,6 +77,18 @@ public class MainActivity extends Activity {
         };
         try {
             cm.registerDefaultNetworkCallback(netWatch);
+            // A VPN (Tailscale) coming or going does not change the default network: watch it too.
+            vpnWatch = new android.net.ConnectivityManager.NetworkCallback() {
+                private void push() {
+                    String json = Bridge.networkJson(MainActivity.this);
+                    runOnUiThread(() -> { if (web != null) web.evaluateJavascript("window.n9OnNetwork&&window.n9OnNetwork(" + json + ")", null); });
+                }
+                @Override public void onAvailable(android.net.Network n) { push(); }
+                @Override public void onLost(android.net.Network n) { push(); }
+            };
+            cm.registerNetworkCallback(new android.net.NetworkRequest.Builder()
+                    .addTransportType(android.net.NetworkCapabilities.TRANSPORT_VPN)
+                    .removeCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VPN).build(), vpnWatch);
         } catch (RuntimeException e) {
             netWatch = null;
         }
@@ -83,9 +96,11 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        if (netWatch != null) {
+        android.net.ConnectivityManager cm = (android.net.ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+        for (android.net.ConnectivityManager.NetworkCallback cb : new android.net.ConnectivityManager.NetworkCallback[] {netWatch, vpnWatch}) {
+            if (cb == null) continue;
             try {
-                ((android.net.ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE)).unregisterNetworkCallback(netWatch);
+                cm.unregisterNetworkCallback(cb);
             } catch (RuntimeException ignored) {
             }
         }

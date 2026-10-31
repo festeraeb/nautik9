@@ -71,13 +71,21 @@ final class Engines {
         // The model is started on demand (the page asks for it when it needs an answer), not here:
         // cold start stays short and an idle phone does not hold a 2.5 GB model.
         if (!alive(SERVER_PORT, "/api/health")) {
-            ProcessBuilder pb = new ProcessBuilder(
+            java.util.List<String> cmd = new java.util.ArrayList<>(java.util.Arrays.asList(
                     nativeDir + "/libnautik9.so",
                     "--device", "s25ultra",
                     "--vault-path", new File(files, "vault.db").getPath(),
                     "--config-dir", configDir.getPath(),
                     "serve", "--bind", "127.0.0.1", "--port", String.valueOf(SERVER_PORT),
-                    "--sms-bridge", "app");
+                    "--sms-bridge", "app"));
+            // config/fleet_url (one line) names the home fleet aggregator for the Fleet Deck; without
+            // it the server's default (this phone's loopback) is asked and answers "unreachable".
+            File fleetUrl = new File(configDir, "fleet_url");
+            if (fleetUrl.exists()) {
+                String u = new String(Files.readAllBytes(fleetUrl.toPath()), StandardCharsets.UTF_8).trim();
+                if (!u.isEmpty()) { cmd.add("--fleet-url"); cmd.add(u); }
+            }
+            ProcessBuilder pb = new ProcessBuilder(cmd);
             pb.environment().put("HOME", files.getPath());
             pb.redirectErrorStream(true);
             pb.redirectOutput(ProcessBuilder.Redirect.appendTo(new File(files, "server.log")));

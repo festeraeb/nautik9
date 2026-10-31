@@ -1485,6 +1485,7 @@
         // chain runs as configured; if the on-device entry was asleep and nothing else answered, it is
         // woken and the request sent once more.
         async function modelFetch(url, init, onStatus, forceLocal) {
+            readNet(); // fresh online/Tailscale state before every model request (a VPN can drop without a network change)
             if (forceLocal || !netState.online) await wakeModel(onStatus);
             let res = await fetch(url, init);
             let data = null;
