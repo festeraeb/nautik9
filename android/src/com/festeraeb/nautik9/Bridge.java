@@ -283,25 +283,24 @@ final class Bridge {
                     : c.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) ? "vpn" : "other";
             return o.put("online", internet).put("transport", t)
                     .put("metered", !c.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED))
-                    .put("tailscale", tailscaleUp()).put("tailscale_installed", installed(ctx, "com.tailscale.ipn")).toString();
+                    .put("tailscale", tailscaleUp(ctx)).put("tailscale_installed", installed(ctx, "com.tailscale.ipn")).toString();
         } catch (Exception e) {
             return error(e.toString());
         }
     }
 
-    /** True when some interface carries a Tailscale address (100.64.0.0/10). */
-    static boolean tailscaleUp() {
+    /**
+     * True when a VPN network (Tailscale) is up. Interface addresses are not enough: a mobile
+     * carrier's own CGNAT address is also in 100.64.0.0/10.
+     */
+    static boolean tailscaleUp(Context ctx) {
         try {
-            java.util.Enumeration<java.net.NetworkInterface> ifs = java.net.NetworkInterface.getNetworkInterfaces();
-            while (ifs != null && ifs.hasMoreElements()) {
-                java.net.NetworkInterface ni = ifs.nextElement();
-                if (!ni.isUp()) continue;
-                for (java.net.InterfaceAddress ia : ni.getInterfaceAddresses()) {
-                    byte[] b = ia.getAddress().getAddress();
-                    if (b.length == 4 && (b[0] & 0xff) == 100 && (b[1] & 0xff) >= 64 && (b[1] & 0xff) < 128) return true;
-                }
+            android.net.ConnectivityManager cm = (android.net.ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+            for (android.net.Network n : cm.getAllNetworks()) {
+                android.net.NetworkCapabilities c = cm.getNetworkCapabilities(n);
+                if (c != null && c.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)) return true;
             }
-        } catch (java.net.SocketException | RuntimeException ignored) {
+        } catch (RuntimeException ignored) {
         }
         return false;
     }
