@@ -269,21 +269,28 @@ final class Bridge {
     static String networkJson(Context ctx) {
         try {
             android.net.ConnectivityManager cm = (android.net.ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
-            android.net.Network n = cm.getActiveNetwork();
-            android.net.NetworkCapabilities c = n == null ? null : cm.getNetworkCapabilities(n);
             JSONObject o = new JSONObject();
-            if (c == null) {
-                return o.put("online", false).put("transport", "none").put("metered", false).toString();
+            // A VPN (Tailscale) is "validated" long after the real link is gone (airplane mode still
+            // showed ONLINE VPN), so online means: some non-VPN network reaches the internet.
+            boolean internet = false, vpn = false;
+            String t = "none";
+            for (android.net.Network n : cm.getAllNetworks()) {
+                android.net.NetworkCapabilities c = cm.getNetworkCapabilities(n);
+                if (c == null) continue;
+                if (c.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)) { vpn = true; continue; }
+                boolean ok = c.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                        && c.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+                if (!ok) continue;
+                String tt = c.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ? "wifi"
+                        : c.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) ? "cell"
+                        : c.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) ? "ethernet" : "other";
+                // Prefer Wi-Fi over cell when both are up.
+                if (!internet || tt.equals("wifi")) { t = tt; o.put("metered", !c.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED)); }
+                internet = true;
             }
-            boolean internet = c.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                    && c.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED);
-            String t = c.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ? "wifi"
-                    : c.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) ? "cell"
-                    : c.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) ? "ethernet"
-                    : c.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) ? "vpn" : "other";
+            if (!internet) o.put("metered", false);
             return o.put("online", internet).put("transport", t)
-                    .put("metered", !c.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED))
-                    .put("tailscale", tailscaleUp(ctx)).put("tailscale_installed", installed(ctx, "com.tailscale.ipn")).toString();
+                    .put("tailscale", vpn).put("tailscale_installed", installed(ctx, "com.tailscale.ipn")).toString();
         } catch (Exception e) {
             return error(e.toString());
         }
