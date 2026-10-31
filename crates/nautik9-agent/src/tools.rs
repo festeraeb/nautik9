@@ -514,6 +514,9 @@ impl Tool for WebSearch {
         true
     }
     async fn call(&self, a: &Value, c: &ToolCtx) -> Result<String, String> {
+        if !nautik9_lemonade::is_online() {
+            return Err(nautik9_lemonade::OFFLINE_MESSAGE.to_string());
+        }
         let q = s(a, "query")?;
         let k = a["k"].as_u64().unwrap_or(6).clamp(1, 20) as usize;
         if c.search.is_empty() {
@@ -603,6 +606,9 @@ impl Tool for Weather {
         true
     }
     async fn call(&self, a: &Value, c: &ToolCtx) -> Result<String, String> {
+        if !nautik9_lemonade::is_online() {
+            return Err(nautik9_lemonade::OFFLINE_MESSAGE.to_string());
+        }
         let days = a["days"].as_u64().unwrap_or(3).clamp(1, 7);
         let (lat, lon, name) = match (a["lat"].as_f64(), a["lon"].as_f64()) {
             (Some(la), Some(lo)) => (la, lo, format!("{la:.4}, {lo:.4}")),
@@ -689,6 +695,9 @@ impl Tool for WebFetch {
         true
     }
     async fn call(&self, a: &Value, c: &ToolCtx) -> Result<String, String> {
+        if !nautik9_lemonade::is_online() {
+            return Err(nautik9_lemonade::OFFLINE_MESSAGE.to_string());
+        }
         let url = s(a, "url")?;
         let max = a["max_chars"].as_u64().unwrap_or(12000).clamp(500, 100_000) as usize;
         fetch_markdown(&c.http, url, max).await
@@ -765,6 +774,9 @@ impl Tool for HttpRequest {
         json!({"type":"object","properties":{"method":{"type":"string","enum":["GET","POST","PUT","PATCH","DELETE"]},"url":{"type":"string"},"headers":{"type":"object","additionalProperties":{"type":"string"}},"body":{"type":"string"}},"required":["url"]})
     }
     async fn call(&self, a: &Value, c: &ToolCtx) -> Result<String, String> {
+        if !nautik9_lemonade::is_online() {
+            return Err(nautik9_lemonade::OFFLINE_MESSAGE.to_string());
+        }
         let method = a["method"].as_str().unwrap_or("GET").to_uppercase();
         let url = fill_secrets(s(a, "url")?, &c.secrets)?;
         if !(url.starts_with("http://") || url.starts_with("https://")) {

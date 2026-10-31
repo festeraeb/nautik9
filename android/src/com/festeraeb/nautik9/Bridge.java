@@ -231,7 +231,6 @@ final class Bridge {
                 o.put("done_mb", p[1] / 1_000_000);
                 o.put("size_mb", p[2] / 1_000_000);
             } else if (model != null) {
-                if (!engines.llmRunning()) engines.startLlmIfModel();
                 o.put("state", "ready");
                 o.put("file", model.getName());
                 o.put("size_mb", model.length() / 1_000_000);
@@ -244,6 +243,49 @@ final class Bridge {
             return error(e.toString());
         }
         return o.toString();
+    }
+
+    /** Start the on-device model if it is not running (returns at once; poll offlineModelStatus). */
+    @JavascriptInterface
+    public void ensureOfflineModel() {
+        engines.ensureLlm();
+    }
+
+    /** Stop the on-device model now (it restarts on demand). */
+    @JavascriptInterface
+    public void stopOfflineModel() {
+        engines.stopLlm();
+    }
+
+    /**
+     * The phone's connectivity: {"online":bool,"transport":"wifi|cell|ethernet|vpn|none",
+     * "metered":bool}. "online" means the active network reached the internet (validated).
+     */
+    @JavascriptInterface
+    public String network() {
+        return networkJson(ctx);
+    }
+
+    static String networkJson(Context ctx) {
+        try {
+            android.net.ConnectivityManager cm = (android.net.ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+            android.net.Network n = cm.getActiveNetwork();
+            android.net.NetworkCapabilities c = n == null ? null : cm.getNetworkCapabilities(n);
+            JSONObject o = new JSONObject();
+            if (c == null) {
+                return o.put("online", false).put("transport", "none").put("metered", false).toString();
+            }
+            boolean internet = c.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    && c.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+            String t = c.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ? "wifi"
+                    : c.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) ? "cell"
+                    : c.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) ? "ethernet"
+                    : c.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) ? "vpn" : "other";
+            return o.put("online", internet).put("transport", t)
+                    .put("metered", !c.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED)).toString();
+        } catch (Exception e) {
+            return error(e.toString());
+        }
     }
 
     @JavascriptInterface

@@ -16,6 +16,7 @@ public class MainActivity extends Activity {
     private static final String HOME = "http://127.0.0.1:" + Engines.SERVER_PORT;
     private WebView web;
     private Bridge bridge;
+    private android.net.ConnectivityManager.NetworkCallback netWatch;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -57,7 +58,44 @@ public class MainActivity extends Activity {
         }
         if (!ask.isEmpty()) requestPermissions(ask.toArray(new String[0]), 1);
         startForegroundService(new Intent(this, EngineService.class));
+        watchNetwork();
         start();
+    }
+
+    /** Tell the page when the phone goes online or offline: window.n9OnNetwork({online, transport, metered}). */
+    private void watchNetwork() {
+        android.net.ConnectivityManager cm = (android.net.ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+        netWatch = new android.net.ConnectivityManager.NetworkCallback() {
+            private void push() {
+                String json = Bridge.networkJson(MainActivity.this);
+                runOnUiThread(() -> { if (web != null) web.evaluateJavascript("window.n9OnNetwork&&window.n9OnNetwork(" + json + ")", null); });
+            }
+            @Override public void onAvailable(android.net.Network n) { push(); }
+            @Override public void onLost(android.net.Network n) { push(); }
+            @Override public void onCapabilitiesChanged(android.net.Network n, android.net.NetworkCapabilities c) { push(); }
+        };
+        try {
+            cm.registerDefaultNetworkCallback(netWatch);
+        } catch (RuntimeException e) {
+            netWatch = null;
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (netWatch != null) {
+            try {
+                ((android.net.ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE)).unregisterNetworkCallback(netWatch);
+            } catch (RuntimeException ignored) {
+            }
+        }
+        // The user closed the app (swiped it away or pressed back out): stop the model and the
+        // server so nothing runs in the background. A rotation or theme change keeps them.
+        if (isFinishing()) {
+            Engines.get(this).stopAll();
+            stopService(new Intent(this, EngineService.class));
+        }
+        super.onDestroy();
     }
 
     private final java.util.concurrent.atomic.AtomicBoolean starting = new java.util.concurrent.atomic.AtomicBoolean();

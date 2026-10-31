@@ -20,6 +20,10 @@ final class Engines {
     static final int SERVER_PORT = 8340;
     static final int LLM_PORT = 8341;
     static final String LLM_ALIAS = "on-device";
+    /** Threads for the on-device model: the big cores. More than this fights the UI and burns battery. */
+    static final int LLM_THREADS = 6;
+    /** Stop the on-device model after this long without a request; it restarts on demand. */
+    static final long LLM_IDLE_STOP_MS = 10 * 60_000L;
 
     private static Engines instance;
 
@@ -30,6 +34,8 @@ final class Engines {
     private Process server;
     private Process llm;
     private String llmModel;
+    private long llmStartedAt;
+    private Thread idleWatcher;
 
     static synchronized Engines get(Context c) {
         if (instance == null) instance = new Engines(c.getApplicationContext());
@@ -62,7 +68,8 @@ final class Engines {
         configDir.mkdirs();
         writeDefaultProviders();
         Download.progress(ctx, modelsDir()); // finishes a download that completed while the app was away
-        startLlmIfModel();
+        // The model is started on demand (the page asks for it when it needs an answer), not here:
+        // cold start stays short and an idle phone does not hold a 2.5 GB model.
         if (!alive(SERVER_PORT, "/api/health")) {
             ProcessBuilder pb = new ProcessBuilder(
                     nativeDir + "/libnautik9.so",
@@ -80,6 +87,92 @@ final class Engines {
         for (int i = 0; i < 300 && !alive(SERVER_PORT, "/api/health"); i++) {
             sleep(200);
         }
+        startIdleWatcher();
+    }
+
+    /** Start the on-device model in the background if a model file is present. */
+    void ensureLlm() {
+        new Thread(() -> {
+            try {
+                startLlmIfModel();
+            } catch (IOException ignored) {
+            }
+        }, "llm-start").start();
+    }
+
+    /** Stop the on-device model (ours, or an orphan from an earlier app process). */
+    synchronized void stopLlm() {
+        if (llm != null) {
+            llm.destroy();
+            llm = null;
+        }
+        for (int pid : pidsOf("libllama_server.so")) android.os.Process.killProcess(pid);
+        llmModel = null;
+    }
+
+    /** Stop everything the app started. Used when the user closes the app. */
+    synchronized void stopAll() {
+        stopLlm();
+        if (server != null) {
+            server.destroy();
+            server = null;
+        }
+        for (int pid : pidsOf("libnautik9.so")) android.os.Process.killProcess(pid);
+    }
+
+    /** Our own child processes whose command line names this binary. */
+    private static java.util.List<Integer> pidsOf(String binary) {
+        java.util.List<Integer> out = new java.util.ArrayList<>();
+        File[] procs = new File("/proc").listFiles((d, n) -> n.chars().allMatch(Character::isDigit));
+        if (procs == null) return out;
+        for (File p : procs) {
+            try {
+                byte[] cmd = Files.readAllBytes(new File(p, "cmdline").toPath());
+                if (new String(cmd, StandardCharsets.UTF_8).contains(binary)) out.add(Integer.parseInt(p.getName()));
+            } catch (IOException | RuntimeException ignored) {
+                // another app's process: unreadable, skip
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Every minute: if the model has answered nothing for LLM_IDLE_STOP_MS (the server keeps
+     * the time of the last local request), stop it. It comes back in a few seconds when asked.
+     */
+    private synchronized void startIdleWatcher() {
+        if (idleWatcher != null && idleWatcher.isAlive()) return;
+        idleWatcher = new Thread(() -> {
+            while (true) {
+                sleep(60_000);
+                try {
+                    if (!llmRunning()) continue;
+                    long idleMs = System.currentTimeMillis() - llmStartedAt;
+                    Long fromServer = serverIdleSeconds();
+                    if (fromServer != null) idleMs = Math.min(idleMs, fromServer * 1000);
+                    if (idleMs > LLM_IDLE_STOP_MS) stopLlm();
+                } catch (RuntimeException ignored) {
+                }
+            }
+        }, "llm-idle");
+        idleWatcher.setDaemon(true);
+        idleWatcher.start();
+    }
+
+    /** Seconds since the server last asked the on-device model, or null if unknown / never. */
+    private Long serverIdleSeconds() {
+        try {
+            HttpURLConnection c = (HttpURLConnection) new URL("http://127.0.0.1:" + SERVER_PORT + "/api/net").openConnection();
+            c.setRequestProperty("Authorization", "Bearer " + token());
+            c.setConnectTimeout(500);
+            c.setReadTimeout(1500);
+            if (c.getResponseCode() != 200) return null;
+            String body = new String(c.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            org.json.JSONObject o = new org.json.JSONObject(body);
+            return o.isNull("local_model_idle_seconds") ? null : o.getLong("local_model_idle_seconds");
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     synchronized void startLlmIfModel() throws IOException {
@@ -91,11 +184,18 @@ final class Engines {
                 "-m", model.getPath(),
                 "-a", LLM_ALIAS,
                 "--host", "127.0.0.1", "--port", String.valueOf(LLM_PORT),
-                "-c", "8192", "-ctk", "q8_0", "-ctv", "q8_0", "-t", "6", "--jinja");
+                "-c", "8192", "-ctk", "q8_0", "-ctv", "q8_0",
+                "-t", String.valueOf(LLM_THREADS), "-tb", String.valueOf(LLM_THREADS),
+                // Keep the system prompt and earlier turns in the KV cache between requests.
+                "--cache-reuse", "256",
+                // No model warm-up pass: the first real request pays it instead, so wake is quick.
+                "--no-warmup",
+                "--jinja");
         pb.redirectErrorStream(true);
         pb.redirectOutput(ProcessBuilder.Redirect.appendTo(new File(files, "llm.log")));
         llm = pb.start();
         llmModel = model.getName();
+        llmStartedAt = System.currentTimeMillis();
     }
 
     boolean llmRunning() {

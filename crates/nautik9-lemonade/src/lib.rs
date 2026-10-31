@@ -1,7 +1,59 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+/// Whether the device has a network path right now (set by the app from the phone's
+/// connectivity state; defaults to online). When offline, non-`offline` providers are
+/// skipped at once instead of waiting on connect timeouts.
+static NET_ONLINE: AtomicBool = AtomicBool::new(true);
+/// Unix seconds of the last request sent to an `offline` (local) provider, 0 = never.
+static LOCAL_MODEL_LAST_USE: AtomicU64 = AtomicU64::new(0);
+
+pub fn set_online(online: bool) {
+    NET_ONLINE.store(online, Ordering::Relaxed);
+}
+
+pub fn is_online() -> bool {
+    NET_ONLINE.load(Ordering::Relaxed)
+}
+
+/// Plain text for a tool or feature that cannot work without a connection.
+pub const OFFLINE_MESSAGE: &str = "This needs an internet connection and the phone is offline right now.";
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// Record that the local (on-device) model was just asked something.
+pub fn note_local_model_use() {
+    LOCAL_MODEL_LAST_USE.store(now_secs(), Ordering::Relaxed);
+}
+
+/// Seconds since the local model was last asked; None if it has not been asked since start.
+pub fn local_model_idle_seconds() -> Option<u64> {
+    match LOCAL_MODEL_LAST_USE.load(Ordering::Relaxed) {
+        0 => None,
+        t => Some(now_secs().saturating_sub(t)),
+    }
+}
+
+/// Providers to try for this request: `offline_only` keeps only local ones; when the device
+/// is offline, remote ones are listed in `skipped` instead of being tried.
+fn plan_chain<'a>(providers: &'a [Provider], offline_only: bool) -> (Vec<&'a Provider>, Vec<String>) {
+    let online = is_online();
+    let mut chain = Vec::new();
+    let mut skipped = Vec::new();
+    for p in providers.iter().filter(|p| !offline_only || p.offline) {
+        if !p.offline && !online {
+            skipped.push(format!("{} ({}): skipped, the phone is offline", p.name, p.base_url));
+        } else {
+            chain.push(p);
+        }
+    }
+    (chain, skipped)
+}
 
 use nautik9_core::{
     error::NautikError,
@@ -265,24 +317,23 @@ impl LemonadeModule {
     ) -> Result<ChatAnswer, ChatFailure> {
         let start = Instant::now();
         let sys = system_prompt.unwrap_or("You are Mighty Mack, a NautiDog and helpful companion (sometimes).");
-        let chain: Vec<&Provider> = self
-            .config
-            .providers
-            .iter()
-            .filter(|p| !offline_only || p.offline)
-            .collect();
+        let (chain, mut attempts) = plan_chain(&self.config.providers, offline_only);
         if chain.is_empty() {
             return Err(ChatFailure {
                 error: if offline_only {
                     "no offline endpoint is configured".to_string()
+                } else if !attempts.is_empty() {
+                    "the phone is offline and no on-device model is configured".to_string()
                 } else {
                     "no model endpoint is configured".to_string()
                 },
-                attempts: vec![],
+                attempts,
             });
         }
-        let mut attempts = Vec::new();
         for p in chain {
+            if p.offline {
+                note_local_model_use();
+            }
             match self.try_provider(p, sys, prompt).await {
                 Ok((reply, model)) => {
                     return Ok(ChatAnswer {
@@ -313,12 +364,15 @@ impl LemonadeModule {
         offline_only: bool,
     ) -> Result<RawAnswer, ChatFailure> {
         let start = Instant::now();
-        let chain: Vec<&Provider> = self.config.providers.iter().filter(|p| !offline_only || p.offline).collect();
+        let (chain, mut attempts) = plan_chain(&self.config.providers, offline_only);
         if chain.is_empty() {
-            return Err(ChatFailure { error: "no model endpoint is configured".to_string(), attempts: vec![] });
+            let error = if attempts.is_empty() { "no model endpoint is configured" } else { "the phone is offline and no on-device model is configured" };
+            return Err(ChatFailure { error: error.to_string(), attempts });
         }
-        let mut attempts = Vec::new();
         for p in chain {
+            if p.offline {
+                note_local_model_use();
+            }
             let model = match self.resolve_model(p).await {
                 Ok(m) => m,
                 Err(e) => {

@@ -5,6 +5,8 @@
     <!-- The server and the on-device model run in this app; INTERNET also lets the
          provider chain reach a home Lemonade when the phone is on that network. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Online/offline state for the page (which features need a connection right now). -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Read the inbox for Work SMS drafts. Nothing is ever sent by the app: replies
          open in the phone's own composer and you press send. -->
     <uses-permission android:name="android.permission.READ_SMS" />
