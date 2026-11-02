@@ -131,6 +131,17 @@ impl ChatAnswer {
     }
 }
 
+/// The assistant message one endpoint returned for a full chat (content and/or tool_calls).
+#[derive(Debug, Clone, Serialize)]
+pub struct RawAnswer {
+    pub message: serde_json::Value,
+    pub model: String,
+    pub provider: String,
+    pub endpoint: String,
+    pub finish_reason: Option<String>,
+    pub duration_ms: u64,
+}
+
 /// Every endpoint failed. Carries one line per attempt; never an invented reply.
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatFailure {
@@ -289,6 +300,72 @@ impl LemonadeModule {
             error: "no model endpoint answered".to_string(),
             attempts,
         })
+    }
+
+    /// One OpenAI chat-completions call with full `messages` (and optional `tools`) through the
+    /// chain; the first endpoint that returns a message wins. Returns the assistant message as
+    /// the endpoint sent it (content and/or tool_calls), never an invented one.
+    pub async fn chat_messages(
+        &self,
+        messages: &[serde_json::Value],
+        tools: Option<&serde_json::Value>,
+        max_tokens: Option<u32>,
+        offline_only: bool,
+    ) -> Result<RawAnswer, ChatFailure> {
+        let start = Instant::now();
+        let chain: Vec<&Provider> = self.config.providers.iter().filter(|p| !offline_only || p.offline).collect();
+        if chain.is_empty() {
+            return Err(ChatFailure { error: "no model endpoint is configured".to_string(), attempts: vec![] });
+        }
+        let mut attempts = Vec::new();
+        for p in chain {
+            let model = match self.resolve_model(p).await {
+                Ok(m) => m,
+                Err(e) => {
+                    attempts.push(format!("{} ({}): {}", p.name, p.base_url, e));
+                    continue;
+                }
+            };
+            let mut body = serde_json::json!({
+                "model": model, "messages": messages, "temperature": 0.3, "stream": false,
+                "max_tokens": max_tokens.unwrap_or(self.config.max_tokens),
+            });
+            if let Some(t) = tools.filter(|t| t.as_array().is_some_and(|a| !a.is_empty())) {
+                body["tools"] = t.clone();
+            }
+            let url = format!("{}/chat/completions", p.base_url.trim_end_matches('/'));
+            let res = async {
+                let resp = self.authed(self.client.post(&url), p).json(&body).send().await.map_err(|e| short_err(&e))?;
+                let status = resp.status();
+                let v: serde_json::Value = resp.json().await.map_err(|e| format!("bad response: {}", short_err(&e)))?;
+                if !status.is_success() {
+                    let msg = v["error"]["message"].as_str().or(v["error"].as_str()).unwrap_or("");
+                    return Err(format!("HTTP {} {}", status.as_u16(), msg).trim().to_string());
+                }
+                let msg = v["choices"][0]["message"].clone();
+                let has_text = msg["content"].as_str().is_some_and(|t| !t.trim().is_empty());
+                let has_calls = msg["tool_calls"].as_array().is_some_and(|a| !a.is_empty());
+                if !has_text && !has_calls {
+                    return Err("empty reply".to_string());
+                }
+                Ok((msg, v["model"].as_str().filter(|m| !m.is_empty()).map(str::to_string), v["choices"][0]["finish_reason"].as_str().map(str::to_string)))
+            }
+            .await;
+            match res {
+                Ok((message, m, finish_reason)) => {
+                    return Ok(RawAnswer {
+                        message,
+                        model: m.unwrap_or(model),
+                        provider: p.name.clone(),
+                        endpoint: p.base_url.clone(),
+                        finish_reason,
+                        duration_ms: start.elapsed().as_millis() as u64,
+                    })
+                }
+                Err(e) => attempts.push(format!("{} ({}): {}", p.name, p.base_url, e)),
+            }
+        }
+        Err(ChatFailure { error: "no model endpoint answered".to_string(), attempts })
     }
 
     /// Draft an SMS reply. `is_owner` selects the prompt; `vault_context` is

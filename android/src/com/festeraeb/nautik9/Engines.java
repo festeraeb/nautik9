@@ -76,8 +76,9 @@ final class Engines {
             pb.redirectOutput(ProcessBuilder.Redirect.appendTo(new File(files, "server.log")));
             server = pb.start();
         }
-        for (int i = 0; i < 100 && !alive(SERVER_PORT, "/api/health"); i++) {
-            sleep(100);
+        // Up to 60 s: a first start can be slow while the phone is busy.
+        for (int i = 0; i < 300 && !alive(SERVER_PORT, "/api/health"); i++) {
+            sleep(200);
         }
     }
 
@@ -90,7 +91,7 @@ final class Engines {
                 "-m", model.getPath(),
                 "-a", LLM_ALIAS,
                 "--host", "127.0.0.1", "--port", String.valueOf(LLM_PORT),
-                "-c", "4096", "-t", "6", "--jinja");
+                "-c", "8192", "-ctk", "q8_0", "-ctv", "q8_0", "-t", "6", "--jinja");
         pb.redirectErrorStream(true);
         pb.redirectOutput(ProcessBuilder.Redirect.appendTo(new File(files, "llm.log")));
         llm = pb.start();

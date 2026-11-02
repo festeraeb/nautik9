@@ -11,10 +11,19 @@ use nautik9_core::{
 };
 use nautik9_fleet::{FleetConfig, FleetModule};
 use nautik9_lemonade::{LemonadeConfig, LemonadeModule};
-use nautik9_wayfinder::{generate_fast_embedding, WayfinderModule, WayfinderVault};
+use nautik9_wayfinder::{WayfinderModule, WayfinderVault};
 
+mod agent_api;
+mod agent_ext;
+mod flow_api;
 mod auth;
 mod device_sms;
+mod notes_api;
+mod static_assets;
+mod tls;
+mod bridges_glue;
+mod tts;
+mod webxdc_api;
 
 #[derive(Parser, Debug)]
 #[command(name = "nautik9", version = "0.1.0", about = "NautiK9 Pure-Rust Survey & Organization Engine")]
@@ -83,6 +92,16 @@ enum Commands {
         /// Android app pushes its inbox to /api/sms/ingest and opens the composer itself)
         #[arg(long, value_enum, default_value = "adb")]
         sms_bridge: SmsBridge,
+        /// Serve HTTPS (rustls). Uses tls-cert.pem / tls-key.pem in the config dir, making a
+        /// self-signed pair on first run. Without this flag the server speaks plain HTTP.
+        #[arg(long)]
+        tls: bool,
+        /// Your own certificate (PEM); implies --tls and needs --tls-key
+        #[arg(long)]
+        tls_cert: Option<PathBuf>,
+        /// Private key (PEM) for --tls-cert
+        #[arg(long)]
+        tls_key: Option<PathBuf>,
     },
 }
 
@@ -246,23 +265,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Index { id, title, content, tags } => {
             println!("📥 Indexing new entry into Wayfinder vault: [{}] {}", id, title);
-            let emb = generate_fast_embedding(&format!("{} {}", title, content), hardware.recommended_embedding_dim);
-            
             let vault = WayfinderVault::new(&cli.vault_path)?;
-            vault.put_item(&id, &title, &content, &tags, Some(&emb)).await?;
+            vault.put_item(&id, &title, &content, &tags, None).await?;
 
             let index_event = NautikEvent::new(
                 "cli",
                 EventPayload::WayfinderItemIndexed { item_id: id, title, tags },
             );
             registry.dispatch_event(index_event).await?;
-            println!("✓ Successfully indexed with {}-dimensional vector embedding.", hardware.recommended_embedding_dim);
+            println!("✓ Indexed (keyword search; meaning-based search needs an embedding endpoint in agent.json).");
         }
         Commands::Interactive => {
             println!("Interactive mode: Mack is on watch. Type your request or 'exit'.");
         }
-        Commands::Serve { port, bind, fleet_url, print_token, sms_bridge } => {
-            let opts = ServeOptions { port, bind, fleet_url, print_token, config_dir, lemonade_config, sms_bridge };
+        Commands::Serve { port, bind, fleet_url, print_token, sms_bridge, tls, tls_cert, tls_key } => {
+            let tls = (tls || tls_cert.is_some() || tls_key.is_some()).then_some((tls_cert, tls_key));
+            let opts = ServeOptions { port, bind, fleet_url, print_token, config_dir, lemonade_config, sms_bridge, tls };
             serve_mobile_web(opts, registry, cli.vault_path).await?;
             return Ok(());
         }
@@ -282,6 +300,10 @@ struct AppState {
     lemonade: std::sync::Arc<LemonadeModule>,
     fleet_url: String,
     sms_bridge: SmsBridge,
+    /// The agent, or why it could not start (reported by every /api/agent call).
+    agent: Result<std::sync::Arc<nautik9_agent::Agent>, String>,
+    /// Runs schedules, `Jade/crontab` and the heartbeat (None when the agent is unavailable).
+    scheduler: Option<std::sync::Arc<nautik9_agent::schedule::Runner>>,
 }
 
 struct ServeOptions {
@@ -292,6 +314,8 @@ struct ServeOptions {
     config_dir: PathBuf,
     lemonade_config: LemonadeConfig,
     sms_bridge: SmsBridge,
+    /// HTTPS: Some((cert, key)) paths, both None = the config dir's self-signed pair.
+    tls: Option<(Option<PathBuf>, Option<PathBuf>)>,
 }
 
 fn build_router(state: AppState, token: String) -> axum::Router {
@@ -305,11 +329,15 @@ fn build_router(state: AppState, token: String) -> axum::Router {
         .route("/api/search", post(handle_search))
         .route("/api/chat", post(handle_chat))
         .route("/api/decompose", post(handle_decompose))
-        .route("/api/notes", get(handle_get_notes).post(handle_save_note))
+        .route("/api/notes", post(handle_save_note))
         .route("/api/notes/{id}", axum::routing::delete(handle_delete_note))
         .route("/api/notes/{id}/backlinks", get(handle_backlinks))
         .route("/api/tags", get(handle_tags))
-        .route("/api/tot", post(handle_tot))
+        .route("/api/tot", post(agent_ext::tot))
+        .route("/api/agent/templates", get(agent_ext::templates))
+        .route("/api/agent/templates/{name}/create", post(agent_ext::template_create))
+        .route("/api/agent/scripts", get(agent_ext::scripts))
+        .route("/api/agent/scripts/run", post(agent_ext::script_run))
         .route("/api/fleet/status", get(handle_fleet_status))
         .route("/api/avatar/action", post(handle_avatar_action))
         .route("/api/sms/inbox", get(handle_sms_inbox))
@@ -317,6 +345,36 @@ fn build_router(state: AppState, token: String) -> axum::Router {
         .route("/api/sms/incoming", post(handle_sms_incoming))
         .route("/api/sms/action", post(handle_sms_action))
         .route("/api/sms/ingest", post(handle_sms_ingest))
+        .route("/api/agent/chat", post(agent_api::chat))
+        .route("/api/agent/sessions", get(agent_api::sessions))
+        .route("/api/agent/sessions/{id}", get(agent_api::session).delete(agent_api::delete_session))
+        .route("/api/agent/sessions/{id}/rate", post(agent_api::rate))
+        .route("/api/agent/sessions/{id}/retry", post(agent_api::retry))
+        .route("/api/agent/schedules", get(agent_api::schedules).post(agent_api::add_schedule))
+        .route("/api/agent/schedules/{id}", axum::routing::delete(agent_api::delete_schedule))
+        .route("/api/agent/schedules/{id}/run", post(agent_api::run_schedule))
+        .route("/api/agent/export", get(agent_api::export))
+        .route("/api/agent/embeddings", post(agent_api::embeddings))
+        .route("/api/agent/journal", post(agent_api::journal))
+        .route("/api/agent/web_search", post(agent_api::web_search))
+        .route("/api/agent/mcp", post(agent_api::mcp_proxy))
+        .route("/api/agent/playbooks", get(agent_api::playbooks))
+        .route("/api/agent/playbooks/{name}", get(agent_api::playbook_show))
+        .route("/api/agent/playbooks/{name}/check", post(agent_api::playbook_check))
+        .route("/api/agent/playbooks/{name}/run", post(agent_api::playbook_run))
+        .route("/api/agent/playbooks/{name}/approve", post(agent_api::playbook_approve))
+        // Notes extras (search, graph, attachments) and the compiled-in static files.
+        .merge(notes_api::routes())
+        .route("/static/{*name}", get(static_assets::serve))
+        .route("/api/agent/flows", get(flow_api::flows))
+        .route("/api/agent/flows/{name}", get(flow_api::flow_show))
+        .route("/api/agent/flows/{name}/check", post(flow_api::flow_check))
+        .route("/api/agent/flows/{name}/run", post(flow_api::flow_run))
+        .route("/api/agent/flows/{name}/approve", post(flow_api::flow_approve))
+        .route("/api/agent/flows/{name}/hook", post(flow_api::flow_hook))
+        // Webxdc mini apps and text to speech (own modules)
+        .merge(webxdc_api::routes())
+        .merge(tts::routes())
         .layer(axum::middleware::from_fn_with_state(
             std::sync::Arc::new(token),
             auth::require_token,
@@ -338,14 +396,13 @@ async fn apply_draft(
     lemonade: &LemonadeModule,
     cfg: &WorkModeConfig,
     vault_path: &std::path::Path,
-    embedding_dim: usize,
+    _embedding_dim: usize,
 ) {
     let is_owner = cfg.is_owner(&msg.sender);
     let vault_context = if is_owner {
         match WayfinderVault::new(vault_path) {
             Ok(v) => {
-                let q_emb = generate_fast_embedding(&msg.body, embedding_dim);
-                let hits = v.search(&msg.body, Some(&q_emb), 3).await.unwrap_or_default();
+                let hits = v.search(&msg.body, 3).await.unwrap_or_default();
                 if hits.is_empty() {
                     None
                 } else {
@@ -439,43 +496,97 @@ async fn serve_mobile_web(
         }
     }
 
+    let agent = match agent_api::load_mcp(&opts.config_dir).await {
+        Ok((tools, local, notes)) => {
+            for n in notes {
+                println!("Agent: {n}");
+            }
+            agent_api::build_agent(&opts.config_dir, &vault_path, lemonade.clone(), (tools, local))
+        }
+        Err(e) => Err(e),
+    };
     let state = AppState {
         registry: std::sync::Arc::new(tokio::sync::Mutex::new(registry)),
         hardware,
         vault_path,
         sms_messages: std::sync::Arc::new(tokio::sync::RwLock::new(initial_sms)),
         work_config: std::sync::Arc::new(tokio::sync::RwLock::new(work_config)),
+        scheduler: match &agent {
+            Ok(a) => match agent_api::heartbeat_minutes(&opts.config_dir) {
+                Ok(hb) => Some(nautik9_agent::schedule::Runner::new(a.clone(), hb)),
+                Err(e) => {
+                    println!("Agent: scheduler NOT started: {e}");
+                    None
+                }
+            },
+            Err(_) => None,
+        },
+        agent,
         lemonade,
         fleet_url: opts.fleet_url.clone(),
         sms_bridge: opts.sms_bridge,
     };
+    match &state.agent {
+        Ok(_) => println!("Agent: ready (sessions in {})", opts.config_dir.join("sessions.db").display()),
+        Err(e) => println!("Agent: NOT available: {e}"),
+    }
 
-    let app = build_router(state, token.clone());
+    if let Some(r) = &state.scheduler {
+        r.spawn();
+        println!("Agent: scheduler running (ticks every 30 s; Jade/crontab, Jade/HEARTBEAT.md, log Jade/Logs/cron.log)");
+    }
+    if let Ok(a) = &state.agent {
+        nautik9_agent::flow::FlowRunner::new(a.clone()).spawn();
+        println!("Agent: flows running (schedule and note_changed triggers checked every 30 s; Jade/Flows/<name>.json, only approved flows fire)");
+    }
+    for n in match &state.agent {
+        Ok(a) => bridges_glue::spawn(&opts.config_dir, a.clone(), state.lemonade.clone(), state.work_config.clone(), state.sms_messages.clone()),
+        Err(_) => vec![],
+    } {
+        println!("Bridges: {n}");
+    }
+    let app = build_router(state, token.clone()).layer(axum::Extension(webxdc_api::Runtime { config_dir: opts.config_dir.clone(), secret: token.clone() }));
 
     let addr = format!("{}:{}", opts.bind, opts.port);
+    let tls_files = match &opts.tls {
+        Some((c, k)) => {
+            let names: Vec<String> = lan_ip().into_iter().collect();
+            Some(tls::resolve_files(&opts.config_dir, c.as_deref(), k.as_deref(), &names)?)
+        }
+        None => None,
+    };
+    let scheme = if tls_files.is_some() { "https" } else { "http" };
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
     println!("=======================================================");
     println!("NautiK9 companion server listening on {}", addr);
-    println!("  Local:  http://127.0.0.1:{}", opts.port);
+    println!("  Local:  {scheme}://127.0.0.1:{}", opts.port);
     let lan = if opts.bind == "0.0.0.0" { lan_ip() } else { None };
     if let Some(ip) = &lan {
-        println!("  LAN:    http://{}:{}", ip, opts.port);
+        println!("  LAN:    {scheme}://{}:{}", ip, opts.port);
     }
     println!("  Token:  {} ({})", opts.config_dir.join("token").display(), if token_created { "created now" } else { "existing" });
     if opts.print_token || std::io::IsTerminal::is_terminal(&std::io::stdout()) {
         let host = lan.unwrap_or_else(|| "127.0.0.1".to_string());
-        println!("  Open once: http://{}:{}/?token={}", host, opts.port, token);
+        println!("  Open once: {scheme}://{}:{}/?token={}", host, opts.port, token);
     } else {
         println!("  (token URL not printed to a log; read the token file or start with --print-token)");
     }
-    if opts.bind != "127.0.0.1" && opts.bind != "localhost" {
+    if let Some(f) = &tls_files {
+        println!("  HTTPS:  certificate {} ({})", f.cert.display(), if f.generated { "self-signed, made now" } else { "existing" });
+        if f.generated || opts.tls.as_ref().is_some_and(|t| t.0.is_none()) {
+            println!("  The self-signed certificate encrypts traffic; your browser or phone must be told to trust it once.");
+        }
+    } else if opts.bind != "127.0.0.1" && opts.bind != "localhost" {
         println!("  WARNING: plain HTTP. The token and your data cross the network unencrypted.");
         println!("  Keep this on a trusted LAN or VPN; never port-forward it to the internet.");
     }
     println!("=======================================================");
 
-    axum::serve(listener, app).await?;
+    match tls_files {
+        Some(f) => tls::serve(listener.into_std()?, app, &f).await?,
+        None => axum::serve(listener, app).await?,
+    }
     Ok(())
 }
 
@@ -541,8 +652,7 @@ async fn handle_search(
 ) -> axum::Json<serde_json::Value> {
     let q = payload["query"].as_str().unwrap_or("survey");
     let vault = WayfinderVault::new(&state.vault_path).unwrap_or_else(|_| WayfinderVault::in_memory().unwrap());
-    let q_emb = generate_fast_embedding(q, state.hardware.recommended_embedding_dim);
-    let results = vault.search(q, Some(&q_emb), 10).await.unwrap_or_default();
+    let results = vault.search(q, 10).await.unwrap_or_default();
 
     {
         let reg_guard = state.registry.lock().await;
@@ -725,6 +835,9 @@ async fn handle_sms_incoming(
         );
     }
 
+    if let Ok(a) = &state.agent {
+        nautik9_agent::flow::spawn_event(a.clone(), nautik9_agent::flow::Event::sms(&new_msg.sender, &new_msg.body));
+    }
     state.sms_messages.write().await.insert(0, new_msg.clone());
 
     axum::Json(serde_json::json!({
@@ -839,6 +952,9 @@ async fn handle_sms_ingest(
         if work_cfg.enabled {
             apply_draft(&mut msg, &state.lemonade, &work_cfg, &state.vault_path, state.hardware.recommended_embedding_dim).await;
         }
+        if let Ok(a) = &state.agent {
+            nautik9_agent::flow::spawn_event(a.clone(), nautik9_agent::flow::Event::sms(&msg.sender, &msg.body));
+        }
         state.sms_messages.write().await.insert(0, msg);
         added += 1;
     }
@@ -897,28 +1013,8 @@ async fn handle_decompose(
     }))
 }
 
-#[derive(serde::Deserialize, Default)]
-struct NotesQuery {
-    tag: Option<String>,
-}
-
 fn open_vault(state: &AppState) -> WayfinderVault {
     WayfinderVault::new(&state.vault_path).unwrap_or_else(|_| WayfinderVault::in_memory().unwrap())
-}
-
-async fn handle_get_notes(
-    axum::extract::State(state): axum::extract::State<AppState>,
-    axum::extract::Query(q): axum::extract::Query<NotesQuery>,
-) -> axum::Json<serde_json::Value> {
-    let vault = open_vault(&state);
-    let items = match q.tag.as_deref().filter(|t| !t.is_empty()) {
-        Some(t) => vault.notes_with_tag(t).await.unwrap_or_default(),
-        None => vault.list_items().await.unwrap_or_default(),
-    };
-    axum::Json(serde_json::json!({
-        "notes": items,
-        "count": items.len()
-    }))
 }
 
 async fn handle_backlinks(
@@ -960,8 +1056,7 @@ async fn handle_save_note(
     let links = nautik9_wayfinder::parse_links(content);
 
     let vault = open_vault(&state);
-    let emb = generate_fast_embedding(&format!("{} {}", title, content), state.hardware.recommended_embedding_dim);
-    let ok = vault.put_item(&id, title, content, &tags, Some(&emb)).await.is_ok();
+    let ok = vault.put_item(&id, title, content, &tags, None).await.is_ok();
 
     axum::Json(serde_json::json!({
         "success": ok,
@@ -981,20 +1076,6 @@ async fn handle_delete_note(
     axum::Json(serde_json::json!({ "success": ok, "id": id }))
 }
 
-/// Tree-of-thought reasoning is not implemented. The old endpoint returned a fixed
-/// template with invented verifier results, so it now says so instead.
-async fn handle_tot() -> axum::response::Response {
-    use axum::response::IntoResponse;
-    (
-        axum::http::StatusCode::NOT_IMPLEMENTED,
-        axum::Json(serde_json::json!({
-            "ok": false,
-            "error": "Tree-of-thought reasoning is not implemented yet (planned). Use Chat for a model answer."
-        })),
-    )
-        .into_response()
-}
-
 async fn handle_avatar_action(
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::Json(payload): axum::Json<serde_json::Value>,
@@ -1005,13 +1086,13 @@ async fn handle_avatar_action(
 
     match action {
         "bark" | "alert" => {
-            avatar.transition_to(nautik9_core::avatar::MackState::TargetLocked, "Mack barked! Target locked on survey sonar.".to_string());
+            avatar.transition_to(nautik9_core::avatar::MackState::TargetLocked, "Mack barked!".to_string());
         }
         "sleep" | "rest" => {
             avatar.transition_to(nautik9_core::avatar::MackState::Idle, "Mack is resting on the foredeck.".to_string());
         }
         "navigate" => {
-            avatar.transition_to(nautik9_core::avatar::MackState::SurveyNavigating, "NautiK9 underway: heading 042° True.".to_string());
+            avatar.transition_to(nautik9_core::avatar::MackState::SurveyNavigating, "Mack is ready to plot a course (no route or heading is set).".to_string());
         }
         _ => {
             avatar.transition_to(nautik9_core::avatar::MackState::Attentive, "Mack is watching the helm.".to_string());
@@ -1068,7 +1149,10 @@ mod tests {
             lemonade: std::sync::Arc::new(dead_lemonade()),
             fleet_url: "http://127.0.0.1:1".into(),
             sms_bridge,
+            agent: agent_api::build_agent(dir, &dir.join("vault.db"), std::sync::Arc::new(dead_lemonade()), Default::default()),
+            scheduler: None,
         };
+        let state = AppState { scheduler: state.agent.as_ref().ok().map(|a| nautik9_agent::schedule::Runner::new(a.clone(), 0)), ..state };
         build_router(state, TOKEN.to_string())
     }
 
@@ -1088,12 +1172,208 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn schedules_api_add_list_run_delete() {
+        let d = tempfile::tempdir().unwrap();
+        let a = app(d.path());
+        let (s, _) = call(&a, "GET", "/api/agent/schedules", None, None).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+        let (s, v) = call(&a, "POST", "/api/agent/schedules", Some(TOKEN), Some(serde_json::json!({"spec":"whenever","prompt":"x"}))).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+        let (s, v) = call(&a, "POST", "/api/agent/schedules", Some(TOKEN), Some(serde_json::json!({"spec":"daily at 08:00","prompt":"Morning brief"}))).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        let id = v["id"].as_str().unwrap().to_string();
+        let (_, l) = call(&a, "GET", "/api/agent/schedules", Some(TOKEN), None).await;
+        assert_eq!(l.as_array().unwrap().len(), 1);
+        // No model endpoint in this test: the run is recorded as an error, not an answer.
+        let (s, v) = call(&a, "POST", &format!("/api/agent/schedules/{id}/run"), Some(TOKEN), Some(serde_json::json!({}))).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert!(v["last_result"].as_str().unwrap().starts_with("ERROR:"), "{v}");
+        let (s, _) = call(&a, "POST", "/api/agent/schedules/nope/run", Some(TOKEN), Some(serde_json::json!({}))).await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+        let (s, _) = call(&a, "DELETE", &format!("/api/agent/schedules/{id}"), Some(TOKEN), None).await;
+        assert_eq!(s, StatusCode::OK);
+        let (s, _) = call(&a, "DELETE", &format!("/api/agent/schedules/{id}"), Some(TOKEN), None).await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn playbook_api_check_run_approve() {
+        let d = tempfile::tempdir().unwrap();
+        {
+            let v = nautik9_wayfinder::WayfinderVault::new(&d.path().join("vault.db")).unwrap();
+            let doc = serde_json::json!({"name":"hello","vars":{"who":"world"},"tasks":[
+                {"do":"write","args":{"path":"Out/{{ who }}.md","content":"hi {{ who }}"},"register":"w"},
+                {"do":"read","args":{"path":"Out/world.md"},"register":"r"},
+                {"do":"assert","args":{"that":["w.ok","r.result == 'hi world'"]}}]});
+            nautik9_agent::tools::write_note(&v, "Jade/Playbooks/hello.json", &doc.to_string()).await.unwrap();
+        }
+        let a = app(d.path());
+        let u = "/api/agent/playbooks";
+        let (s, l) = call(&a, "GET", u, Some(TOKEN), None).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(l[0]["name"], "hello");
+        assert_eq!(l[0]["approved"], false);
+        let (s, c) = call(&a, "POST", &format!("{u}/hello/check"), Some(TOKEN), None).await;
+        assert!(s == StatusCode::OK && c["ok"] == true && c["plan"].as_array().unwrap().len() == 3, "{c}");
+        let (s, _) = call(&a, "GET", &format!("{u}/nope"), Some(TOKEN), None).await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+        let (s, _) = call(&a, "POST", &format!("{u}/hello/run"), Some(TOKEN), Some(serde_json::json!({"trigger":"schedule"}))).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "not approved yet");
+        let (s, r) = call(&a, "POST", &format!("{u}/hello/run"), Some(TOKEN), Some(serde_json::json!({}))).await;
+        assert!(s == StatusCode::OK && r["ok"] == true && r["trigger"] == "manual", "{r}");
+        let (s, ap) = call(&a, "POST", &format!("{u}/hello/approve"), Some(TOKEN), None).await;
+        assert!(s == StatusCode::OK && ap["sha256"].as_str().unwrap().len() == 64);
+        let (s, r) = call(&a, "POST", &format!("{u}/hello/run"), Some(TOKEN), Some(serde_json::json!({"trigger":"schedule","vars":{"who":"world"}}))).await;
+        assert!(s == StatusCode::OK && r["ok"] == true && r["trigger"] == "schedule", "{r}");
+        let (s, r) = call(&a, "POST", &format!("{u}/hello/run"), Some(TOKEN), Some(serde_json::json!({"vars":{"bogus":1}}))).await;
+        assert!(s == StatusCode::OK && r["ok"] == false, "a failed run is reported as failed: {r}");
+        let (s, sh) = call(&a, "GET", &format!("{u}/hello"), Some(TOKEN), None).await;
+        assert!(s == StatusCode::OK && sh["approved"] == true);
+    }
+
+    async fn vault_note(dir: &std::path::Path, path: &str) -> Option<String> {
+        let v = nautik9_wayfinder::WayfinderVault::new(&dir.join("vault.db")).unwrap();
+        nautik9_agent::tools::note_by_path(&v, path).await.unwrap().map(|n| n.content)
+    }
+
+    async fn seed_flow_vault(dir: &std::path::Path, flows: &[(&str, serde_json::Value)]) {
+        let v = nautik9_wayfinder::WayfinderVault::new(&dir.join("vault.db")).unwrap();
+        let pb = serde_json::json!({"name":"mark","vars":{"who":"nobody"},"tasks":[
+            {"do":"save","args":{"path":"Out/marker.md","content":"hello {{ who }}","append":true}}]});
+        nautik9_agent::tools::write_note(&v, "Jade/Playbooks/mark.json", &pb.to_string()).await.unwrap();
+        for (name, doc) in flows {
+            nautik9_agent::tools::write_note(&v, &format!("Jade/Flows/{name}.json"), &doc.to_string()).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn flows_api_list_check_run_approve_and_hook() {
+        let d = tempfile::tempdir().unwrap();
+        let flow = serde_json::json!({"name":"inbound","trigger":{"type":"webhook"},"action":{"playbook":"mark","vars":{"who":"{{ trigger.payload.name }}"}}});
+        let nohook = serde_json::json!({"name":"manualonly","trigger":{"type":"manual"},"action":{"playbook":"mark"}});
+        seed_flow_vault(d.path(), &[("inbound", flow.clone()), ("manualonly", nohook)]).await;
+        let a = app(d.path());
+        let u = "/api/agent/flows";
+        // every flow route needs the token, the webhook included
+        for (m, uri) in [("GET", u.to_string()), ("GET", format!("{u}/inbound")), ("POST", format!("{u}/inbound/check")), ("POST", format!("{u}/inbound/run")), ("POST", format!("{u}/inbound/approve")), ("POST", format!("{u}/inbound/hook"))] {
+            let (s, _) = call(&a, m, &uri, None, Some(serde_json::json!({}))).await;
+            assert_eq!(s, StatusCode::UNAUTHORIZED, "{m} {uri}");
+        }
+        let (s, l) = call(&a, "GET", u, Some(TOKEN), None).await;
+        assert_eq!(s, StatusCode::OK);
+        let inbound = l.as_array().unwrap().iter().find(|f| f["name"] == "inbound").unwrap();
+        assert_eq!((inbound["valid"].clone(), inbound["approved"].clone(), inbound["trigger"]["type"].clone()), (serde_json::json!(true), serde_json::json!(false), serde_json::json!("webhook")));
+        let (s, c) = call(&a, "POST", &format!("{u}/inbound/check"), Some(TOKEN), None).await;
+        assert!(s == StatusCode::OK && c["ok"] == true, "{c}");
+
+        // unapproved: the hook is refused and nothing runs
+        let hook = format!("{u}/inbound/hook");
+        let (s, v) = call(&a, "POST", &hook, Some(TOKEN), Some(serde_json::json!({"name":"ann"}))).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+        assert!(vault_note(d.path(), "Out/marker.md").await.is_none());
+        // approve the flow: it fires, but its playbook is not approved yet, so that does not run
+        let (s, ap) = call(&a, "POST", &format!("{u}/inbound/approve"), Some(TOKEN), None).await;
+        assert!(s == StatusCode::OK && ap["sha256"].as_str().unwrap().len() == 64, "{ap}");
+        let (s, v) = call(&a, "POST", &hook, Some(TOKEN), Some(serde_json::json!({"name":"ann"}))).await;
+        assert!(s == StatusCode::OK && v["ok"] == false && v["detail"].as_str().unwrap().contains("not approved"), "{v}");
+        assert!(vault_note(d.path(), "Out/marker.md").await.is_none());
+        let (s, _) = call(&a, "POST", "/api/agent/playbooks/mark/approve", Some(TOKEN), None).await;
+        assert_eq!(s, StatusCode::OK);
+        let (s, v) = call(&a, "POST", &hook, Some(TOKEN), Some(serde_json::json!({"name":"ann"}))).await;
+        assert!(s == StatusCode::OK && v["ok"] == true && v["report"]["trigger"] == "flow", "{v}");
+        assert_eq!(vault_note(d.path(), "Out/marker.md").await.unwrap(), "hello ann");
+        // token in the query string works like for every route
+        let (s, _) = call(&a, "POST", &format!("{hook}?token={TOKEN}"), None, Some(serde_json::json!({"name":"bob"}))).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(vault_note(d.path(), "Out/marker.md").await.unwrap(), "hello ann\nhello bob");
+
+        // the file changes: the old approval no longer counts
+        let mut edited = flow.clone();
+        edited["action"]["vars"]["who"] = serde_json::json!("x-{{ trigger.payload.name }}");
+        seed_flow_vault(d.path(), &[("inbound", edited)]).await;
+        let (s, v) = call(&a, "POST", &hook, Some(TOKEN), Some(serde_json::json!({"name":"eve"}))).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+        assert!(v["error"].as_str().unwrap().contains("changed since"), "{v}");
+        assert_eq!(vault_note(d.path(), "Out/marker.md").await.unwrap(), "hello ann\nhello bob");
+        let (_, sh) = call(&a, "GET", &format!("{u}/inbound"), Some(TOKEN), None).await;
+        assert_eq!(sh["approved"], false);
+        // by hand the owner can still run it (manual run, playbook runs as manual)
+        let (s, v) = call(&a, "POST", &format!("{u}/inbound/run"), Some(TOKEN), Some(serde_json::json!({"payload":{"name":"hand"}}))).await;
+        assert!(s == StatusCode::OK && v["ok"] == true && v["report"]["trigger"] == "manual", "{v}");
+        assert!(vault_note(d.path(), "Out/marker.md").await.unwrap().ends_with("hello x-hand"));
+
+        // not a webhook flow / unknown flow
+        let (s, v) = call(&a, "POST", &format!("{u}/manualonly/hook"), Some(TOKEN), Some(serde_json::json!({}))).await;
+        assert_eq!(s, StatusCode::CONFLICT, "{v}");
+        let (s, _) = call(&a, "POST", &format!("{u}/nope/hook"), Some(TOKEN), Some(serde_json::json!({}))).await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+        let (s, _) = call(&a, "POST", &format!("{u}/nope/approve"), Some(TOKEN), None).await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn playbook_schedules_over_the_api_run_only_approved_playbooks() {
+        let d = tempfile::tempdir().unwrap();
+        seed_flow_vault(d.path(), &[]).await;
+        let a = app(d.path());
+        let (s, _) = call(&a, "POST", "/api/agent/schedules", Some(TOKEN), Some(serde_json::json!({"spec":"hourly","playbook":"bad name"}))).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+        let (s, _) = call(&a, "POST", "/api/agent/schedules", Some(TOKEN), Some(serde_json::json!({"spec":"whenever","playbook":"mark"}))).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+        let (s, v) = call(&a, "POST", "/api/agent/schedules", Some(TOKEN), Some(serde_json::json!({"spec":"hourly","playbook":"mark"}))).await;
+        assert!(s == StatusCode::OK && v["kind"] == "playbook" && v["payload"] == "mark", "{v}");
+        let id = v["id"].as_str().unwrap().to_string();
+        let (_, v) = call(&a, "POST", &format!("/api/agent/schedules/{id}/run"), Some(TOKEN), Some(serde_json::json!({}))).await;
+        assert!(v["last_result"].as_str().unwrap().starts_with("ERROR:") && v["last_result"].as_str().unwrap().contains("not approved"), "{v}");
+        assert!(vault_note(d.path(), "Out/marker.md").await.is_none());
+        call(&a, "POST", "/api/agent/playbooks/mark/approve", Some(TOKEN), None).await;
+        let (_, v) = call(&a, "POST", &format!("/api/agent/schedules/{id}/run"), Some(TOKEN), Some(serde_json::json!({}))).await;
+        assert!(v["last_result"].as_str().unwrap().contains("(schedule): OK"), "{v}");
+        assert_eq!(vault_note(d.path(), "Out/marker.md").await.unwrap(), "hello nobody");
+    }
+
+    #[tokio::test]
+    async fn an_incoming_text_fires_an_approved_sms_flow() {
+        let d = tempfile::tempdir().unwrap();
+        let doc = serde_json::json!({"name":"onsms","trigger":{"type":"sms_received","contains":"tide"},"action":{"playbook":"mark","vars":{"who":"{{ trigger.body }}"}}});
+        seed_flow_vault(d.path(), &[("onsms", doc)]).await;
+        let a = app(d.path());
+        call(&a, "POST", "/api/agent/playbooks/mark/approve", Some(TOKEN), None).await;
+        // not approved yet: the text arrives, nothing runs
+        call(&a, "POST", "/api/sms/incoming", Some(TOKEN), Some(serde_json::json!({"sender":"+15550001111","body":"tide table please"}))).await;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert!(vault_note(d.path(), "Out/marker.md").await.is_none());
+        call(&a, "POST", "/api/agent/flows/onsms/approve", Some(TOKEN), None).await;
+        call(&a, "POST", "/api/sms/incoming", Some(TOKEN), Some(serde_json::json!({"sender":"+15550001111","body":"unrelated"}))).await;
+        call(&a, "POST", "/api/sms/ingest", Some(TOKEN), Some(serde_json::json!({"messages":[{"id":"7","sender":"+15550002222","body":"high tide at six"}]}))).await;
+        let mut got = None;
+        for _ in 0..50 {
+            got = vault_note(d.path(), "Out/marker.md").await;
+            if got.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(got.as_deref(), Some("hello high tide at six"));
+    }
+
+    #[test]
+    fn ui_has_an_automations_tab_wired_to_the_owner_api() {
+        let html = get_mobile_html();
+        assert!(html.contains("switchTab('auto', this)") && html.contains("id=\"pane-auto\""));
+        for route in ["/api/agent/playbooks", "/api/agent/flows", "/api/agent/schedules"] {
+            assert!(html.contains(route), "{route}");
+        }
+        assert!(html.contains("data-act") && html.contains("'approve'") && html.contains("confirm("), "approve asks the owner first");
+    }
+
+    #[tokio::test]
     async fn api_requires_token_except_health() {
         let d = tempfile::tempdir().unwrap();
         let a = app(d.path());
         let (s, _) = call(&a, "GET", "/api/health", None, None).await;
         assert_eq!(s, StatusCode::OK);
-        for uri in ["/api/sms/inbox", "/api/notes", "/api/status", "/api/fleet/status", "/api/tags", "/api/providers", "/assets/mack.jpg"] {
+        for uri in ["/api/sms/inbox", "/api/notes", "/api/status", "/api/fleet/status", "/api/tags", "/api/providers", "/assets/mack.jpg", "/api/agent/playbooks"] {
             let (s, _) = call(&a, "GET", uri, None, None).await;
             assert_eq!(s, StatusCode::UNAUTHORIZED, "{uri} must need a token");
         }
@@ -1224,13 +1504,88 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tot_is_not_faked() {
+    async fn embeddings_and_journal_endpoints_are_honest() {
+        let d = tempfile::tempdir().unwrap();
+        let a = app(d.path());
+        let (s, _) = call(&a, "POST", "/api/agent/embeddings", None, Some(serde_json::json!({"action":"status"}))).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+        let (s, _) = call(&a, "POST", "/api/agent/journal", None, Some(serde_json::json!({}))).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+        // No `embeddings` in agent.json: semantic is off and says so; keyword search still works.
+        let (s, v) = call(&a, "POST", "/api/agent/embeddings", Some(TOKEN), Some(serde_json::json!({"action":"status"}))).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["result"]["semantic"], "off: keyword only");
+        let (_, v) = call(&a, "POST", "/api/agent/embeddings", Some(TOKEN), Some(serde_json::json!({"action":"add","collection":"snips","text":"Likes oat milk lattes"}))).await;
+        assert_eq!(v["result"]["added"], 1);
+        let (_, v) = call(&a, "POST", "/api/agent/embeddings", Some(TOKEN), Some(serde_json::json!({"action":"search","query":"lattes"}))).await;
+        assert!(v["result"]["mode_used"].as_str().unwrap().starts_with("keyword only"));
+        assert_eq!(v["result"]["hits"][0]["collection"], "snips");
+        let (s, v) = call(&a, "POST", "/api/agent/embeddings", Some(TOKEN), Some(serde_json::json!({"action":"search","query":"coffee","mode":"semantic"}))).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+        assert!(v["error"].as_str().unwrap().contains("keyword only"));
+        // Journal: a bad date is a 400; with a stored chat and no model it is a 502 and writes nothing.
+        let (s, _) = call(&a, "POST", "/api/agent/journal", Some(TOKEN), Some(serde_json::json!({"date":"yesterday"}))).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+        let (s, _) = call(&a, "POST", "/api/agent/chat", Some(TOKEN), Some(serde_json::json!({"message":"hello journal"}))).await;
+        assert_eq!(s, StatusCode::BAD_GATEWAY);
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let (s, v) = call(&a, "POST", "/api/agent/journal", Some(TOKEN), Some(serde_json::json!({"date": today}))).await;
+        assert_eq!(s, StatusCode::BAD_GATEWAY, "{v}");
+        assert!(v["error"].as_str().unwrap().contains("journal not written"));
+        let (_, notes) = call(&a, "GET", "/api/notes", Some(TOKEN), None).await;
+        assert!(!notes.to_string().contains("Journal"), "nothing written: {notes}");
+    }
+
+    #[tokio::test]
+    async fn tot_without_an_endpoint_is_an_honest_error() {
         let d = tempfile::tempdir().unwrap();
         let a = app(d.path());
         let (s, v) = call(&a, "POST", "/api/tot", Some(TOKEN), Some(serde_json::json!({"problem":"x"}))).await;
-        assert_eq!(s, StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(s, StatusCode::BAD_GATEWAY, "{v}");
         assert_eq!(v["ok"], false);
-        assert!(v.get("nodes").is_none());
+        assert!(v.get("nodes").is_none() && v["attempts"].as_array().is_some_and(|a| !a.is_empty()), "{v}");
+        let (s, _) = call(&a, "POST", "/api/tot", Some(TOKEN), Some(serde_json::json!({"problem":"  "}))).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+        let (s, _) = call(&a, "POST", "/api/tot", None, Some(serde_json::json!({"problem":"x"}))).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn templates_and_scripts_routes() {
+        let d = tempfile::tempdir().unwrap();
+        let a = app(d.path());
+        let mk = |title: &str, content: &str| serde_json::json!({"title": title, "content": content, "tags": []});
+        call(&a, "POST", "/api/notes", Some(TOKEN), Some(mk("Templates/Log.md", "# <% tp.file.title %>\nAsked: <% tp.system.prompt(\"Who?\") %>\n<% tp.file.cursor() %>"))).await;
+        call(&a, "POST", "/api/notes", Some(TOKEN), Some(mk("Scripts/sum.md", "Adds.\n```js\nreturn args.a + args.b + (await jade.list('Templates/')).length;\n```"))).await;
+        let (s, v) = call(&a, "GET", "/api/agent/templates", Some(TOKEN), None).await;
+        assert_eq!((s, v["templates"][0].as_str()), (StatusCode::OK, Some("Templates/Log.md")), "{v}");
+        let (s, v) = call(&a, "POST", "/api/agent/templates/Log/create", Some(TOKEN), Some(serde_json::json!({"title": "Visits/Mon"}))).await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+        assert!(v["error"].as_str().unwrap().contains("Who?"));
+        let (s, v) = call(&a, "POST", "/api/agent/templates/Log/create", Some(TOKEN), Some(serde_json::json!({"title": "Visits/Mon", "values": {"Who?": "Sam"}}))).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["text"], "# Mon\nAsked: Sam\n");
+        let (s, _) = call(&a, "POST", "/api/agent/templates/Log/create", Some(TOKEN), Some(serde_json::json!({"title": "Visits/Mon", "values": {"Who?": "Sam"}}))).await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "never overwrites");
+        let (s, v) = call(&a, "GET", "/api/agent/scripts", Some(TOKEN), None).await;
+        assert_eq!((s, v["scripts"][0].as_str()), (StatusCode::OK, Some("Scripts/sum.md")), "{v}");
+        let (s, v) = call(&a, "POST", "/api/agent/scripts/run", Some(TOKEN), Some(serde_json::json!({"path": "Scripts/sum.md", "args": {"a": 2, "b": 3}}))).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert!(v["result"].as_str().unwrap().contains("returned: 6"), "{v}");
+        let (s, _) = call(&a, "POST", "/api/agent/scripts/run", Some(TOKEN), Some(serde_json::json!({"path": "Scripts/none.md"}))).await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn sandbox_tool_is_off_unless_configured() {
+        let d = tempfile::tempdir().unwrap();
+        let on = |dir: &std::path::Path| agent_api::build_agent(dir, &dir.join("vault.db"), std::sync::Arc::new(dead_lemonade()), Default::default()).unwrap();
+        assert!(on(d.path()).tools.get("sandbox").is_none());
+        let d2 = tempfile::tempdir().unwrap();
+        std::fs::write(d2.path().join("agent.json"), r#"{"sandbox": {"enabled": true}}"#).unwrap();
+        let a = on(d2.path());
+        assert!(a.tools.allowed("sandbox", true, false).is_some());
+        assert!(a.tools.allowed("sandbox", false, false).is_none(), "non-owner gets no sandbox");
     }
 
     #[test]

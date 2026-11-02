@@ -15,6 +15,7 @@ import android.webkit.WebViewClient;
 public class MainActivity extends Activity {
     private static final String HOME = "http://127.0.0.1:" + Engines.SERVER_PORT;
     private WebView web;
+    private Bridge bridge;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -28,7 +29,9 @@ public class MainActivity extends Activity {
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
         s.setAllowFileAccess(false);
-        web.addJavascriptInterface(new Bridge(this, Engines.get(this)), "NautiK9Android");
+        bridge = new Bridge(this, Engines.get(this));
+        bridge.attach(web);
+        web.addJavascriptInterface(bridge, "NautiK9Android");
         web.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
@@ -46,31 +49,59 @@ public class MainActivity extends Activity {
                 + "Mack is waking up...</body>", "text/html", "utf-8");
         setContentView(web);
 
-        if (checkSelfPermission(android.Manifest.permission.READ_SMS) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[] {android.Manifest.permission.READ_SMS}, 1);
+        java.util.List<String> ask = new java.util.ArrayList<>();
+        if (checkSelfPermission(android.Manifest.permission.READ_SMS) != PackageManager.PERMISSION_GRANTED) ask.add(android.Manifest.permission.READ_SMS);
+        // Android 13+: the "NautiK9 is running" notification needs this; the service runs either way.
+        if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            ask.add(android.Manifest.permission.POST_NOTIFICATIONS);
         }
+        if (!ask.isEmpty()) requestPermissions(ask.toArray(new String[0]), 1);
+        startForegroundService(new Intent(this, EngineService.class));
         start();
     }
 
+    private final java.util.concurrent.atomic.AtomicBoolean starting = new java.util.concurrent.atomic.AtomicBoolean();
+
+    /** Start the engines if needed and show the page. Safe to call again: one start at a time. */
     private void start() {
+        if (!starting.compareAndSet(false, true)) return;
         new Thread(() -> {
-            String url;
             try {
                 Engines e = Engines.get(this);
                 e.startAll();
-                url = HOME + "/?token=" + e.token();
+                if (!Engines.alive(Engines.SERVER_PORT, "/api/health")) {
+                    throw new java.io.IOException("it did not answer within 60 s (see files/server.log)");
+                }
+                String url = HOME + "/?token=" + e.token();
+                runOnUiThread(() -> web.loadUrl(url));
             } catch (Exception ex) {
                 String msg = String.valueOf(ex.getMessage()).replace("<", "&lt;");
                 runOnUiThread(() -> web.loadData("<body style='background:#0b1220;color:#fca5a5;font-family:sans-serif;padding:40px'>"
-                        + "The NautiK9 server did not start: " + msg + "</body>", "text/html", "utf-8"));
-                return;
+                        + "The NautiK9 server did not start: " + msg
+                        + "<p>Switch away and back to NautiK9 to try again.</p></body>", "text/html", "utf-8"));
+            } finally {
+                starting.set(false);
             }
-            runOnUiThread(() -> web.loadUrl(url));
         }).start();
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        // Coming back to the app while it still shows the waiting or error screen (the first load
+        // was lost, or the server was not up yet): try again instead of waiting forever.
+        String u = web == null ? null : web.getUrl();
+        if (u == null || !u.startsWith(HOME + "/")) start();
+    }
+
+    @Override
     public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
+        if (code == 2) {
+            boolean granted = false;
+            for (int r : results) granted |= r == PackageManager.PERMISSION_GRANTED;
+            if (bridge != null) bridge.onLocationPermission(granted);
+            return;
+        }
         // Re-read the inbox now that the permission answer is in.
         if (web != null) web.evaluateJavascript("typeof loadSmsInbox==='function'&&loadSmsInbox(true)", null);
     }
