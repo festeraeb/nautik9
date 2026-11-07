@@ -15,6 +15,7 @@ use nautik9_wayfinder::{WayfinderModule, WayfinderVault};
 
 mod agent_api;
 mod apps_api;
+mod buzz_api;
 mod agent_ext;
 mod flow_api;
 mod auth;
@@ -307,6 +308,25 @@ struct AppState {
     scheduler: Option<std::sync::Arc<nautik9_agent::schedule::Runner>>,
 }
 
+#[cfg(test)]
+impl AppState {
+    /// A state with no agent and no usable model, for tests of modules that only need the fleet address.
+    pub(crate) fn test_state(dir: &std::path::Path, hw: HardwareProfile, fleet_url: &str) -> Self {
+        AppState {
+            registry: std::sync::Arc::new(tokio::sync::Mutex::new(ModuleRegistry::new(hw.clone()))),
+            hardware: std::sync::Arc::new(hw),
+            vault_path: dir.join("vault.db"),
+            sms_messages: Default::default(),
+            work_config: Default::default(),
+            lemonade: std::sync::Arc::new(LemonadeModule::new(LemonadeConfig::default())),
+            fleet_url: fleet_url.into(),
+            sms_bridge: SmsBridge::App,
+            agent: Err("test state".into()),
+            scheduler: None,
+        }
+    }
+}
+
 struct ServeOptions {
     port: u16,
     bind: String,
@@ -381,6 +401,7 @@ fn build_router(state: AppState, token: String) -> axum::Router {
         // Webxdc mini apps and text to speech (own modules)
         .merge(webxdc_api::routes())
         .merge(apps_api::routes())
+        .merge(buzz_api::routes())
         .merge(tts::routes())
         .layer(axum::middleware::from_fn_with_state(
             std::sync::Arc::new(token),
@@ -976,7 +997,7 @@ async fn handle_sms_ingest(
 /// Report the aggregator's real answer, or the real error. Nothing is invented.
 async fn fleet_status_value(fleet_url: &str) -> Result<serde_json::Value, String> {
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(1500))
+        .timeout(std::time::Duration::from_secs(5))
         .build()
         .unwrap_or_default();
     let url = format!("{}/api/fleet/nodes", fleet_url.trim_end_matches('/'));
@@ -1060,6 +1081,11 @@ async fn handle_fleet_status(
     use axum::response::IntoResponse;
     if !nautik9_lemonade::is_online() {
         return (StatusCode::SERVICE_UNAVAILABLE, axum::Json(serde_json::json!({ "ok": false, "offline": true, "error": nautik9_lemonade::OFFLINE_MESSAGE }))).into_response();
+    }
+    // Same checks as the model chain: a tailnet fleet address with Tailscale off, or no answer in 5 s,
+    // is a plain message at once instead of a long timeout that looked like "the app picks nothing up".
+    if let Some((kind, msg)) = buzz_api::precheck(&state.fleet_url).await {
+        return (StatusCode::SERVICE_UNAVAILABLE, axum::Json(serde_json::json!({ "ok": false, "kind": kind, "error": msg }))).into_response();
     }
     match fleet_status_value(&state.fleet_url).await {
         Ok(v) => axum::Json(v).into_response(),
