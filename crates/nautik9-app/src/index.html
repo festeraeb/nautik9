@@ -1000,6 +1000,7 @@
             <button class="tab-btn" onclick="switchTab('auto', this)">&#9881; Automations</button>
             <button class="tab-btn" onclick="switchTab('buzz', this)">&#128276; Buzz</button>
             <button class="tab-btn" onclick="switchTab('board', this)">&#129309; Board</button>
+            <button class="tab-btn" onclick="switchTab('godseye', this)">&#127757; God's Eye</button>
             <button class="tab-btn" onclick="switchTab('apps', this)">&#129513; Apps</button>
             <button class="tab-btn" onclick="switchTab('settings', this)">&#127912; Settings</button>
         </nav>
@@ -1382,6 +1383,34 @@
         </div>
     </section>
 
+    <!-- God's Eye: the globe, rendered here (LOCAL) or on a home GPU (STREAM), with the phone tracked on it -->
+    <section id="pane-godseye" class="section-pane">
+        <div class="card">
+            <div class="card-header"><span class="card-title">&#127757; God's Eye</span><button class="btn-primary" style="padding:4px 10px;font-size:0.75rem" onclick="geRun(true)">Measure again</button></div>
+            <div id="geDecision" style="font-size:0.9rem;font-weight:700;margin-bottom:4px">Measuring this phone...</div>
+            <div id="geReasons" style="font-size:0.8rem;color:var(--text-sub);margin-bottom:6px"></div>
+            <div class="n9-set-row" role="group" aria-label="Render mode">
+                <button class="action-pill" id="geModeAuto" onclick="geSetMode('auto')"><span>Auto</span></button>
+                <button class="action-pill" id="geModeLocal" onclick="geSetMode('local')"><span>On this phone</span></button>
+                <button class="action-pill" id="geModeStream" onclick="geSetMode('stream')"><span>Home GPU stream</span></button>
+            </div>
+            <table id="geNumbers" style="font-size:0.78rem;color:var(--text-sub);width:100%;border-collapse:collapse"></table>
+            <p style="font-size:0.74rem;color:var(--text-sub);margin-top:6px">The frame rate is this phone drawing this globe for a short probe; no figure for the home GPU is measured here, so none is claimed. The thresholds are settings (Settings tab), not fixed rules.</p>
+        </div>
+        <div class="card">
+            <div class="card-header"><span class="card-title">&#128205; Track this phone</span></div>
+            <label class="switch-row" style="display:flex;gap:10px;align-items:center;font-size:0.9rem"><input type="checkbox" id="geTrack" onchange="geTrackToggle(this.checked)"> <span id="geTrackLabel">Track off</span></label>
+            <p style="font-size:0.78rem;color:var(--text-sub);margin:6px 0">When this is on, and only while this tab is showing, the phone's position (latitude, longitude, altitude, accuracy, heading, speed and the time) is sent every few seconds, over Tailscale only, to the home track service, which keeps the latest few hundred fixes in memory and shows them on the globe. Nothing is saved on the phone except this switch. It is off until you turn it on.</p>
+            <div id="geTrackStatus" style="font-size:0.8rem;color:var(--brass)"></div>
+        </div>
+        <div class="card">
+            <div class="card-header"><span class="card-title" id="geViewTitle">Globe</span></div>
+            <div id="geViewMsg" style="font-size:0.82rem;color:var(--rose);margin-bottom:6px"></div>
+            <iframe id="geFrame" title="God's Eye globe" style="display:none;width:100%;height:62vh;min-height:360px;border:2px solid var(--border);border-radius:12px;background:#050b14" allow="fullscreen"></iframe>
+            <p style="font-size:0.74rem;color:var(--text-sub);margin-top:6px">Aerial imagery from Esri World Imagery, drawn with CesiumJS. The stream is view-only. The full God's Eye app (many more layers) is at its own address, not inside this tab.</p>
+        </div>
+    </section>
+
     <!-- Apps: built-in web apps (Wayfinder) and sandboxed .xdc mini apps -->
     <section id="pane-apps" class="section-pane">
         <div class="card" id="n9BuiltinApps">
@@ -1434,6 +1463,21 @@
             <div class="input-group"><input type="password" id="setBoardKey" autocomplete="off" placeholder="Board key (write only)"></div>
             <div class="n9-set-row"><button class="btn-primary" onclick="bzSaveSettings()">Save</button><button class="btn-mini" onclick="bzClearKey()">Forget the key</button><span id="setBuzzMsg"></span></div>
         </div>
+        <div class="card">
+            <div class="card-header"><span class="card-title">&#127757; God's Eye</span></div>
+            <p style="font-size:0.78rem;color:var(--text-sub)">Which renderer is used, and the thresholds the phone must clear to draw the globe itself. Leave addresses blank to use the home machine from the fleet address.</p>
+            <div class="n9-set-row"><label for="geSetMode">Mode</label><select id="geSetMode"><option value="auto">Auto (measure)</option><option value="local">Always on this phone</option><option value="stream">Always the home GPU stream</option></select></div>
+            <div class="n9-set-row"><label>Frames per second at least <input type="text" id="geThFps" size="5"></label><label>Texture size at least <input type="text" id="geThTex" size="6"></label></div>
+            <div class="n9-set-row"><label>Memory GB at least <input type="text" id="geThMem" size="4"></label><label>CPU cores at least <input type="text" id="geThCores" size="4"></label><label>Probe ms <input type="text" id="geThProbe" size="5"></label></div>
+            <div class="n9-set-row"><label><input type="checkbox" id="geThSave"> Allow drawing it locally when Data Saver is on</label></div>
+            <div class="input-group"><input type="text" id="geSetTrack" placeholder="Track service address (blank = automatic)"></div>
+            <div class="input-group"><input type="text" id="geSetStream" placeholder="Stream address (blank = automatic)"></div>
+            <div class="input-group"><input type="text" id="geSetTarget" placeholder="GPU to stream from (default t440-p100)"></div>
+            <div class="input-group"><input type="text" id="geSetLabel" placeholder="Device label on the globe"></div>
+            <div class="input-group"><input type="password" id="geSetToken" autocomplete="off" placeholder="Track token (write only)"></div>
+            <div class="n9-set-row"><button class="btn-primary" onclick="geSaveSettings()">Save</button><button class="btn-mini" onclick="geForgetToken()">Forget the token</button><span id="geSetMsg"></span></div>
+        </div>
+
 
     </section>
 
@@ -1713,6 +1757,7 @@
             if (tabId === 'auto') loadAuto();
             if (tabId === 'apps' && window.n9AppsOpen) n9AppsOpen();
             if (window.n9PollSet) n9PollSet(tabId);
+            if (window.geTab) geTab(tabId);
         }
 
         function selectTier(card, tierName, engine) {
@@ -2819,6 +2864,147 @@
         }
         document.addEventListener('visibilitychange', () => { if (document.hidden && bzPollTimer) { clearInterval(bzPollTimer); bzPollTimer = null; window.__n9PollResume = true; } else if (!document.hidden && window.__n9PollResume) { window.__n9PollResume = false; const a = document.querySelector('.section-pane.active'); if (a) n9PollSet(a.id.replace('pane-', '')); } });
         bzSettingsLoad();
+
+        // ---- God's Eye: chooser (measure, decide), globe or stream view, and the phone's track ----
+        // geDecide is pure on purpose: it takes what was measured and the settings' thresholds, nothing else.
+        function geDecide(caps, probe, th) {
+            const why = [];
+            if (!caps.webgl2) why.push('WebGL2 is not available');
+            else if (caps.maxTexture != null && caps.maxTexture < th.min_texture) why.push('largest texture ' + caps.maxTexture + ' is under ' + th.min_texture);
+            if (caps.memoryGb != null && caps.memoryGb < th.min_memory_gb) why.push('memory ' + caps.memoryGb + ' GB is under ' + th.min_memory_gb + ' GB');
+            if (caps.cores != null && caps.cores < th.min_cores) why.push(caps.cores + ' CPU cores is under ' + th.min_cores);
+            if (caps.saveData && !th.allow_save_data) why.push('Data Saver is on');
+            if (caps.powerSave) why.push('battery saver is on');
+            if (probe && probe.ok === false) why.push('the frame probe could not run (' + (probe.error || 'unknown') + ')');
+            else if (probe && probe.fps != null && probe.fps < th.min_fps) why.push('the probe drew ' + probe.fps + ' frames per second, under ' + th.min_fps);
+            const pending = !probe;
+            return { mode: why.length ? 'stream' : 'local', reasons: why, pending };
+        }
+        function geCaps() {
+            const c = document.createElement('canvas'); let gl = null, webgl2 = false;
+            try { gl = c.getContext('webgl2'); webgl2 = !!gl; if (!gl) gl = c.getContext('webgl'); } catch (e) {}
+            let renderer = null;
+            try { const x = gl && gl.getExtension('WEBGL_debug_renderer_info'); renderer = x ? gl.getParameter(x.UNMASKED_RENDERER_WEBGL) : null; } catch (e) {}
+            const conn = navigator.connection || null;
+            let powerSave = null; const b = (typeof bridgeCall === 'function') ? bridgeCall('battery') : null; if (b && typeof b.power_save === 'boolean') powerSave = b.power_save;
+            return { webgl2, maxTexture: gl ? gl.getParameter(gl.MAX_TEXTURE_SIZE) : null, renderer, memoryGb: navigator.deviceMemory || null, cores: navigator.hardwareConcurrency || null,
+                     netType: conn ? (conn.type || conn.effectiveType || null) : null, saveData: conn ? !!conn.saveData : false, powerSave };
+        }
+        let geSettings = null, geProbe = null, geCapsNow = null, geStatus = null, geShown = false, geTimer = null, geWaitFix = false, geLastFix = null, geLastSent = 0;
+        const geEl = id => document.getElementById(id);
+        async function geLoadSettings() { const s = await bzJson('/api/godseye/settings'); if (!s.error) geSettings = s; return geSettings; }
+        function geEffectiveMode() {
+            const th = geSettings.thresholds, d = geDecide(geCapsNow, geProbe, th);
+            if (geSettings.mode === 'local' || geSettings.mode === 'stream') return { mode: geSettings.mode, forced: true, d };
+            return { mode: d.mode, forced: false, d };
+        }
+        function geRenderNumbers() {
+            const c = geCapsNow, p = geProbe; const row = (k, v) => '<tr><td style="padding:2px 6px 2px 0">' + esc(k) + '</td><td><b>' + esc(v) + '</b></td></tr>';
+            geEl('geNumbers').innerHTML = row('WebGL2', c.webgl2 ? 'yes' : 'no') + row('Largest texture', c.maxTexture == null ? 'unknown' : c.maxTexture) + row('Graphics', c.renderer || 'hidden by the browser') +
+                row('Memory (reported)', c.memoryGb == null ? 'not reported' : c.memoryGb + ' GB') + row('CPU cores', c.cores == null ? 'not reported' : c.cores) +
+                row('Network', c.netType || 'not reported') + row('Data Saver', c.saveData ? 'on' : 'off') + row('Battery saver', c.powerSave == null ? 'not reported' : (c.powerSave ? 'on' : 'off')) +
+                row('Globe probe', !p ? 'not run yet' : (p.ok === false ? 'failed: ' + p.error : p.fps + ' fps (median ' + p.medianMs + ' ms, slowest 5% ' + p.p95Ms + ' ms, ' + p.frames + ' frames in ' + p.ms + ' ms)'));
+        }
+        function geRenderDecision() {
+            const e = geEffectiveMode(); const label = e.mode === 'local' ? 'On this phone' : 'Home GPU stream';
+            geEl('geDecision').innerText = (e.forced ? 'Mode set by you: ' : 'Chosen: ') + label;
+            let why = e.forced ? 'Auto would choose ' + (e.d.mode === 'local' ? 'this phone' : 'the home GPU') + (e.d.reasons.length ? ' because ' + e.d.reasons.join('; ') : '') + '.' :
+                (e.d.reasons.length ? 'Because ' + e.d.reasons.join('; ') + '.' : 'This phone clears every threshold' + (e.d.pending ? ' measured so far; the frame probe has not run yet.' : '.'));
+            geEl('geReasons').innerText = why;
+            ['Auto', 'Local', 'Stream'].forEach(m => { const b = geEl('geMode' + m); b.classList.toggle('on', geSettings.mode === m.toLowerCase()); b.setAttribute('aria-pressed', geSettings.mode === m.toLowerCase() ? 'true' : 'false'); });
+            geRenderNumbers(); return e;
+        }
+        async function geSetMode(m) {
+            await bzJson('/api/godseye/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: m }) });
+            await geLoadSettings(); geRenderDecision(); geShowView();
+        }
+        function geRunProbe() {
+            return new Promise(resolve => {
+                const base = geStatus && geStatus.globe_url; if (!base || !geStatus.track.ok) return resolve({ ok: false, error: 'the home globe server is not reachable' });
+                const f = document.createElement('iframe'); f.style.cssText = 'position:fixed;bottom:0;left:0;width:320px;height:240px;opacity:0.01;pointer-events:none;border:0'; f.setAttribute('aria-hidden', 'true');
+                const done = r => { clearTimeout(t); window.removeEventListener('message', on); f.remove(); resolve(r); };
+                const on = ev => { if (ev.source === f.contentWindow && ev.data && ev.data.type === 'godseye-probe') done(ev.data); };
+                const t = setTimeout(() => done({ ok: false, error: 'no answer within 40 s (the globe library may still be downloading)' }), 40000);
+                window.addEventListener('message', on);
+                f.src = base + '?probe=1&ms=' + encodeURIComponent(geSettings.thresholds.probe_ms); document.body.appendChild(f);
+            });
+        }
+        async function geRun(force) {
+            await readNet(); await geLoadSettings(); if (!geSettings) return;
+            geCapsNow = geCapsNow || geCaps();
+            geStatus = await bzJson('/api/godseye/status');
+            if (geStatus.error) { geEl('geDecision').innerText = 'God\'s Eye unavailable'; geEl('geReasons').innerText = geStatus.error; return; }
+            geRenderDecision();
+            const staticOk = geDecide(geCapsNow, null, geSettings.thresholds).mode === 'local';
+            if ((force || !geProbe) && staticOk && geStatus.track.ok) { geEl('geReasons').innerText += ' Measuring the globe...'; geProbe = await geRunProbe(); }
+            geRenderDecision(); geShowView();
+        }
+        function geShowView() {
+            const fr = geEl('geFrame'), msg = geEl('geViewMsg'); if (!geSettings || !geStatus || !geCapsNow || !geShown) return;
+            const e = geEffectiveMode(); const door = e.mode === 'local' ? geStatus.track : geStatus.stream;
+            geEl('geViewTitle').innerText = e.mode === 'local' ? 'Globe (drawn on this phone)' : 'Globe (drawn on a home GPU, view-only)';
+            if (!door.ok) { fr.style.display = 'none'; fr.removeAttribute('src'); msg.innerText = door.message || ('Not reachable: ' + door.kind); return; }
+            msg.innerText = '';
+            const url = e.mode === 'local' ? geStatus.globe_url + '?follow=1' : geStatus.stream_view_url;
+            if (fr.dataset.src !== url) { fr.dataset.src = url; fr.src = url; }
+            fr.style.display = 'block';
+        }
+        // Tracking: only while the tab is showing and the page is visible, only when the switch is on.
+        function geTrackLabel() { const on = geEl('geTrack').checked; geEl('geTrackLabel').innerText = on ? 'Tracking on (sending while this tab is open)' : 'Track off'; }
+        function geTrackToggle(on) {
+            try { localStorage.setItem('nautik9_ge_track', on ? '1' : '0'); } catch (e) {}
+            geTrackLabel(); geTrackSync();
+        }
+        function geBearing(a, b) { const r = x => x * Math.PI / 180, y = Math.sin(r(b.lon - a.lon)) * Math.cos(r(b.lat)), x = Math.cos(r(a.lat)) * Math.sin(r(b.lat)) - Math.sin(r(a.lat)) * Math.cos(r(b.lat)) * Math.cos(r(b.lon - a.lon)); return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360; }
+        function geDist(a, b) { const r = x => x * Math.PI / 180, h = Math.sin(r(b.lat - a.lat) / 2) ** 2 + Math.cos(r(a.lat)) * Math.cos(r(b.lat)) * Math.sin(r(b.lon - a.lon) / 2) ** 2; return 12742000 * Math.asin(Math.sqrt(h)); }
+        async function geSendFix(f) {
+            if (!f || f.error) { geEl('geTrackStatus').innerText = 'No position: ' + ((f && f.error) || 'unknown'); return; }
+            let heading = f.heading_deg, speed = f.speed_mps, derived = false;
+            if (geLastFix && f.time_ms > geLastFix.time_ms) {
+                const d = geDist(geLastFix, f), dt = (f.time_ms - geLastFix.time_ms) / 1000;
+                if (speed == null && dt > 0) { speed = d / dt; derived = true; }
+                if (heading == null && d > 3) { heading = geBearing(geLastFix, f); derived = true; }
+            }
+            geLastFix = { lat: f.lat, lon: f.lon, time_ms: f.time_ms };
+            const j = await bzJson('/api/godseye/fix', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lat: f.lat, lon: f.lon, alt_m: f.altitude_m, accuracy_m: f.accuracy_m, heading_deg: heading, speed_mps: speed, time_ms: f.time_ms }) });
+            geEl('geTrackStatus').innerText = j.error ? ('Not sent: ' + j.error) : ('Sent to home over Tailscale at ' + new Date().toLocaleTimeString() + (f.accuracy_m != null ? ' (accuracy ' + Math.round(f.accuracy_m) + ' m' + (derived ? ', heading/speed worked out from the last two fixes' : '') + ')' : ''));
+        }
+        function geAskFix() {
+            if (window.NautiK9Android && window.NautiK9Android.requestLocation) { geWaitFix = true; window.NautiK9Android.requestLocation(); return; }
+            if (!('geolocation' in navigator)) { geSendFix({ error: 'this browser has no geolocation' }); return; }
+            navigator.geolocation.getCurrentPosition(pos => geSendFix({ lat: pos.coords.latitude, lon: pos.coords.longitude, accuracy_m: pos.coords.accuracy, altitude_m: pos.coords.altitude, heading_deg: pos.coords.heading, speed_mps: pos.coords.speed, time_ms: pos.timestamp }),
+                err => geSendFix({ error: err.message || ('code ' + err.code) }), { enableHighAccuracy: true, timeout: 10000, maximumAge: 2000 });
+        }
+        (function () { const prev = window.n9OnLocation; window.n9OnLocation = f => { if (typeof prev === 'function') prev(f); if (geWaitFix) { geWaitFix = false; geSendFix(f); } }; })();
+        function geTrackSync() {
+            const want = geEl('geTrack').checked && geShown && !document.hidden;
+            if (want && !geTimer) { geAskFix(); geTimer = setInterval(geAskFix, 4000); }
+            if (!want && geTimer) { clearInterval(geTimer); geTimer = null; geWaitFix = false; if (geEl('geTrack').checked) geEl('geTrackStatus').innerText = 'Paused while this tab is not showing.'; }
+            if (!geEl('geTrack').checked) geEl('geTrackStatus').innerText = '';
+        }
+        function geTab(tab) {
+            geShown = tab === 'godseye';
+            if (geShown) { try { geEl('geTrack').checked = localStorage.getItem('nautik9_ge_track') === '1'; } catch (e) {} geTrackLabel(); geRun(false); }
+            else { const fr = geEl('geFrame'); fr.removeAttribute('src'); delete fr.dataset.src; fr.style.display = 'none'; }
+            geTrackSync();
+        }
+        document.addEventListener('visibilitychange', () => { geTrackSync(); });
+        // Settings card
+        async function geSettingsFill() {
+            const s = await geLoadSettings(); if (!s) return;
+            geEl('geSetMode').value = s.mode; geEl('geThFps').value = s.thresholds.min_fps; geEl('geThTex').value = s.thresholds.min_texture; geEl('geThMem').value = s.thresholds.min_memory_gb;
+            geEl('geThCores').value = s.thresholds.min_cores; geEl('geThProbe').value = s.thresholds.probe_ms; geEl('geThSave').checked = !!s.thresholds.allow_save_data; geEl('geSetLabel').value = s.label; geEl('geSetTarget').value = s.stream_target;
+            geEl('geSetToken').placeholder = s.has_token ? 'Track token saved (hidden). Type to replace.' : 'Track token (write only)';
+        }
+        async function geSaveSettings() {
+            const body = { mode: geEl('geSetMode').value, label: geEl('geSetLabel').value, stream_target: geEl('geSetTarget').value || 't440-p100', thresholds: { min_fps: +geEl('geThFps').value, min_texture: +geEl('geThTex').value, min_memory_gb: +geEl('geThMem').value, min_cores: +geEl('geThCores').value, probe_ms: +geEl('geThProbe').value, allow_save_data: geEl('geThSave').checked } };
+            const tu = geEl('geSetTrack').value.trim(), su = geEl('geSetStream').value.trim(); if (tu) body.track_url = tu; if (su) body.stream_url = su;
+            const k = geEl('geSetToken').value; if (k) body.token = k;
+            const j = await bzJson('/api/godseye/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+            geEl('geSetToken').value = ''; geEl('geSetMsg').innerText = j.error ? 'Not saved: ' + j.error : 'Saved.'; geSettingsFill();
+        }
+        async function geForgetToken() { await bzJson('/api/godseye/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: '' }) }); geEl('geSetMsg').innerText = 'Token forgotten.'; geSettingsFill(); }
+        geSettingsFill();
 
         // ---- Apps tab: built-in apps ----
         async function n9AppsOpen() {

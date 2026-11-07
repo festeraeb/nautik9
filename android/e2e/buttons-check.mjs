@@ -157,6 +157,16 @@ await page.waitForTimeout(3000);
 const bzUi = await page.evaluate(() => ({ rooms: document.querySelectorAll('#bzRooms button').length, msgs: document.querySelectorAll('#bzStream .msg-bubble').length, status: document.getElementById('bzStatus').innerText }));
 check('Buzz tab shows rooms and messages (or the plain reason)', (bzUi.rooms > 0 && bzUi.msgs > 0) || /Tailscale|offline/i.test(bzUi.status), JSON.stringify(bzUi));
 
+// God's Eye: read-only checks (no fix is sent, no tracking is switched on).
+const ge = await page.evaluate(async () => { const r = await fetch('/api/godseye/status'); return { status: r.status, body: await r.json().catch(() => ({})) }; });
+if (net.tailscale) check('God\'s Eye track and stream doors answer over Tailscale', ge.status === 200 && ge.body.track.ok && ge.body.stream.ok, JSON.stringify({ track: ge.body.track && ge.body.track.kind || 'ok', stream: ge.body.stream && ge.body.stream.kind || 'ok' }));
+else check('God\'s Eye says Tailscale is off plainly', ge.body.track && ge.body.track.kind === 'no_tailscale', JSON.stringify(ge.body.track));
+await tab('godseye');
+await page.waitForTimeout(6000);
+const geUi = await page.evaluate(() => ({ decision: document.getElementById('geDecision').innerText, track: document.getElementById('geTrack').checked }));
+check('God\'s Eye tab shows a decision and tracking is off', /Chosen|Mode set/.test(geUi.decision) && geUi.track === false, JSON.stringify(geUi));
+await tab('helm');
+
 check('no page errors', errors.length === 0, errors.join(' | '));
 for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.detail ? '  — ' + r.detail : ''}`);
 await browser.close();

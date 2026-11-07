@@ -61,6 +61,10 @@ pub struct Settings {
     pub board_url: String,
 }
 
+pub(crate) fn write_private_pub(path: &Path, text: &str) -> std::io::Result<()> {
+    write_private(path, text)
+}
+
 pub fn load_settings(dir: &Path) -> Settings {
     let v: Value = std::fs::read_to_string(dir.join("buzz.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(json!({}));
     let s = |k: &str| v[k].as_str().map(|x| x.trim().to_string()).filter(|x| !x.is_empty());
@@ -74,12 +78,17 @@ pub fn load_settings(dir: &Path) -> Settings {
 /// `http://host:port` of the fleet aggregator -> `http://host:5561`: Buzz's tailnet door is on the
 /// same machine as the fleet's, so no address has to be written down twice.
 pub fn derive_buzz_url(fleet_url: &str) -> Option<String> {
+    derive_with_port(fleet_url, BUZZ_TAILNET_PORT)
+}
+
+/// The fleet address's host on another port (the home machine's other tailnet doors).
+pub fn derive_with_port(fleet_url: &str, port: u16) -> Option<String> {
     let (scheme, rest) = fleet_url.split_once("://")?;
     let host = rest.split('/').next()?.rsplit_once(':').map(|(h, _)| h).unwrap_or_else(|| rest.split('/').next().unwrap_or(""));
     if host.is_empty() {
         return None;
     }
-    Some(format!("{scheme}://{host}:{BUZZ_TAILNET_PORT}"))
+    Some(format!("{scheme}://{host}:{port}"))
 }
 
 fn effective_buzz_url(st: &AppState, dir: &Path) -> (Option<String>, &'static str) {
