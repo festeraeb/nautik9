@@ -54,7 +54,11 @@
     s += '</g>';
     if (helmet) {
       s += '<circle cx="0" cy="-29" r="16.6" fill="rgba(190,240,255,.16)" stroke="#bfefff" stroke-width="1.3"/>' +
-           '<path d="M-10 -39 Q-4 -45 4 -43" stroke="#fff" stroke-width="1.6" fill="none" stroke-linecap="round" opacity=".75"/>' +
+           '<path d="M-10 -39 Q-4 -45 4 -43" stroke="#fff" stroke-width="1.6" fill="none" stroke-linecap="round" opacity=".8"/>' +
+           '<path d="M9 -40 Q14 -36 15 -30" stroke="#fff" stroke-width="1.1" fill="none" stroke-linecap="round" opacity=".5"/>' +
+           '<path d="M-14 -24 Q-15 -33 -9 -39 L-6 -35 Q-10 -30 -10 -24 Z" fill="#fff" opacity=".18"/>' +
+           '<path d="M-12 -21 Q0 -15 12 -21" stroke="#ffd18a" stroke-width="1" fill="none" opacity=".55"/>' +
+           '<circle cx="6" cy="-42" r=".9" fill="#fff4c9"/>' +
            '<ellipse cx="0" cy="-17" rx="12.6" ry="3.2" fill="#9fb4bd" stroke="#e6f3f7" stroke-width=".8"/>' +
            '<circle cx="-8" cy="-17" r=".9" fill="#ff7a1a"/><circle cx="8" cy="-17" r=".9" fill="#ff7a1a"/>';
     }
@@ -70,12 +74,50 @@
     return '<polyline class="' + (cls || '') + '" points="' + pts.join(' ') + '" fill="none"/>';
   }
 
+  function shade(hex, f) { /* f<0 darker, f>0 lighter */
+    var n = parseInt(hex.slice(1), 16), r = n >> 16, g = (n >> 8) & 255, b = n & 255;
+    function m(c) { return Math.max(0, Math.min(255, Math.round(f < 0 ? c * (1 + f) : c + (255 - c) * f))); }
+    return '#' + ((1 << 24) + (m(r) << 16) + (m(g) << 8) + m(b)).toString(16).slice(1);
+  }
+  function fur(cx, cy, rx, ry, seed, n, amp) { /* a tufted outline: tips and valleys, deterministic */
+    var d = '';
+    for (var i = 0; i < n * 2; i++) {
+      var a = i / (n * 2) * 2 * Math.PI, tip = i % 2 === 0;
+      var j = Math.sin(seed * 12.9 + i * 7.3) * .5 + .5;
+      var k = tip ? 1 + amp * (.6 + .6 * j) : 1 - amp * .35;
+      var x = cx + rx * k * Math.cos(a), y = cy + ry * k * Math.sin(a);
+      d += (i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1);
+    }
+    return d + 'Z';
+  }
+  function furStrokes(cx, cy, rx, ry, seed, count, col) {
+    var o = '';
+    for (var i = 0; i < count; i++) {
+      var a = (i / count) * 2 * Math.PI + seed, rr = .45 + .4 * (Math.sin(seed * 5 + i * 3.1) * .5 + .5);
+      var x = cx + rx * rr * Math.cos(a), y = cy + ry * rr * Math.sin(a), l = 2.2;
+      o += 'M' + x.toFixed(1) + ' ' + y.toFixed(1) + ' q' + (Math.cos(a) * l).toFixed(1) + ' ' + (Math.sin(a) * l + 1).toFixed(1) + ' ' + (Math.cos(a) * l * 1.3).toFixed(1) + ' ' + (Math.sin(a) * l * 1.6 + 1.5).toFixed(1) + ' ';
+    }
+    return '<path d="' + o + '" stroke="' + col + '" stroke-width=".7" fill="none" stroke-linecap="round" opacity=".55"/>';
+  }
+
   function rose(x, y, sc, cls) {
+    /* layered petals around a spiral heart, two leaves with veins, a thorned stem */
+    var petals = '', cols = ['#a80f35', '#c4153f', '#d81b4a', '#ec3a63'], i;
+    for (i = 0; i < 7; i++) {
+      petals += '<path transform="rotate(' + (i * 51.4) + ')" d="M0 0 C-9 -3 -11 -12 -3 -14 C3 -15 8 -11 6 -4 Z" fill="' + cols[i % 2] + '" stroke="#6e0a22" stroke-width=".5"/>';
+    }
+    for (i = 0; i < 5; i++) {
+      petals += '<path transform="rotate(' + (i * 72 + 20) + ')" d="M0 0 C-6 -2 -7 -8 -2 -9 C2 -10 5 -7 3.4 -3 Z" fill="' + cols[2 + (i % 2)] + '" stroke="#8a0f2c" stroke-width=".4"/>';
+    }
     return '<g transform="translate(' + x + ',' + y + ') scale(' + sc + ')"><g class="' + (cls || '') + '">' +
-      '<path d="M0 6 Q-4 18 -2 30" stroke="#1f9d55" stroke-width="2" fill="none"/>' +
-      '<path d="M-1 20 Q-12 14 -14 20 Q-8 24 -1 20 Z" fill="#23b45f"/><path d="M-1 25 Q9 18 12 23 Q6 28 -1 25 Z" fill="#23b45f"/>' +
-      '<circle r="9" fill="#d81b4a"/><path d="M-6 -2 Q0 -9 6 -2 Q3 5 -3 3 Q-7 1 -4 -4" stroke="#ff7a9a" stroke-width="1.3" fill="none"/>' +
-      '<path d="M-3 0 Q0 -4 3 -1 Q1 2 -1 1" stroke="#ffb3c6" stroke-width="1.1" fill="none"/></g></g>';
+      '<path d="M0 8 Q-5 20 -2 34" stroke="#17783f" stroke-width="2.4" fill="none" stroke-linecap="round"/>' +
+      '<path d="M-3 17 l-3 -1.4 M-1.4 26 l3 -1.6" stroke="#0e4f29" stroke-width="1.3" stroke-linecap="round"/>' +
+      '<path d="M-3 22 Q-15 13 -17 22 Q-9 28 -3 22 Z" fill="#23b45f" stroke="#0e4f29" stroke-width=".6"/><path d="M-3 22 Q-10 19 -15 21" stroke="#0e4f29" stroke-width=".5" fill="none"/>' +
+      '<path d="M-2 28 Q9 20 13 26 Q7 32 -2 28 Z" fill="#2fcf70" stroke="#0e4f29" stroke-width=".6"/><path d="M-2 28 Q5 24 11 26" stroke="#0e4f29" stroke-width=".5" fill="none"/>' +
+      '<circle r="11.5" fill="#6e0a22" opacity=".35" cy="1.2"/>' + petals +
+      '<path d="M0 0 m-1 0 a1 1 0 1 1 2 0 a2.4 2.4 0 1 1 -4.4 0 a3.8 3.8 0 1 1 7 0 a5.2 5.2 0 1 1 -9.6 0" stroke="#ffb3c6" stroke-width=".9" fill="none" opacity=".85"/>' +
+      '<path d="M-6 -9 Q-1 -13 4 -10" stroke="#ff9fb6" stroke-width="1" fill="none" opacity=".7" stroke-linecap="round"/>' +
+      '</g></g>';
   }
 
   function bolt(x, y, sc, cls) {
@@ -84,18 +126,34 @@
   }
 
   function skull(x, y, sc, cls) {
-    /* an original round, grinning skull with a rose crown and a star-flecked brow, not a licensed mark */
+    /* an original round, grinning skull with depth (shaded bone, glowing sockets, a rose crown); not a licensed mark */
+    var teeth = '', i;
+    for (i = 0; i < 6; i++) teeth += '<rect x="' + (-12 + i * 4.2) + '" y="19" width="3.6" height="8" rx="1.2" fill="url(#skTooth)" stroke="#3a1a40" stroke-width=".8"/>';
     return '<g transform="translate(' + x + ',' + y + ') scale(' + sc + ')"><g class="' + (cls || '') + '">' +
-      '<path d="M-24 4 Q-26 -26 0 -28 Q26 -26 24 4 Q24 14 14 18 L12 28 H-12 L-14 18 Q-24 14 -24 4 Z" fill="#fff6ea" stroke="#2a0a3a" stroke-width="2"/>' +
-      '<circle cx="-10" cy="2" r="7.5" fill="#2a0a3a"/><circle cx="10" cy="2" r="7.5" fill="#2a0a3a"/>' +
-      '<path d="M-10 -2 l1.8 3.6 l-3.6 0 z M10 -2 l1.8 3.6 l-3.6 0 z" fill="#ff4fa3"/>' +
-      '<path d="M0 10 L-3.4 17 H3.4 Z" fill="#2a0a3a"/>' +
-      '<path d="M-12 22 H12 M-8 19 V28 M-3 19 V28 M3 19 V28 M8 19 V28" stroke="#2a0a3a" stroke-width="1.6" fill="none"/>' +
-      '<polygon points="-4,-24 3,-24 -1,-17 5,-17 -6,-6 -3,-15 -8,-15" fill="#ffe14a" stroke="#ff4fa3" stroke-width="1.2" stroke-linejoin="round" transform="translate(11,2) scale(.7)"/>' +
-      '<g transform="translate(-22,-22)"><circle r="7" fill="#d81b4a"/><circle r="2.4" fill="#ff7a9a"/></g>' +
-      '<g transform="translate(0,-30)"><circle r="8" fill="#ff4fa3"/><circle r="3" fill="#ffe14a"/></g>' +
-      '<g transform="translate(22,-22)"><circle r="7" fill="#d81b4a"/><circle r="2.4" fill="#ff7a9a"/></g>' +
-      '<path d="M-30 -22 q-6 4 -2 9 M30 -22 q6 4 2 9" stroke="#23b45f" stroke-width="3" fill="none"/></g></g>';
+      '<defs><radialGradient id="skBone" cx=".38" cy=".3" r=".85"><stop offset="0" stop-color="#fffaf0"/><stop offset=".55" stop-color="#f0dcc4"/><stop offset="1" stop-color="#b79a86"/></radialGradient>' +
+      '<radialGradient id="skEye" cx=".5" cy=".55" r=".6"><stop offset="0" stop-color="#7a1a8c"/><stop offset=".6" stop-color="#2a0a3a"/><stop offset="1" stop-color="#12031c"/></radialGradient>' +
+      '<linearGradient id="skTooth" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff6ea"/><stop offset="1" stop-color="#cdb59f"/></linearGradient></defs>' +
+      '<ellipse cx="2" cy="32" rx="22" ry="4" fill="#12031c" opacity=".45"/>' +
+      '<path d="M-24 4 Q-26 -26 0 -28 Q26 -26 24 4 Q24 14 14 18 L12 29 H-12 L-14 18 Q-24 14 -24 4 Z" fill="url(#skBone)" stroke="#2a0a3a" stroke-width="2"/>' +
+      '<path d="M-23 6 Q-14 16 -14 18 L-12 29" fill="none" stroke="#9a7c68" stroke-width="2" opacity=".5"/>' +
+      '<path d="M16 -20 Q24 -14 23 2" stroke="#fff" stroke-width="1.6" fill="none" opacity=".55" stroke-linecap="round"/>' +
+      '<ellipse cx="-10" cy="3" rx="7.6" ry="8.2" fill="url(#skEye)" stroke="#2a0a3a" stroke-width="1.2"/><ellipse cx="10" cy="3" rx="7.6" ry="8.2" fill="url(#skEye)" stroke="#2a0a3a" stroke-width="1.2"/>' +
+      '<circle cx="-12" cy="0.4" r="1.5" fill="#ff7bbf" opacity=".9"/><circle cx="8" cy="0.4" r="1.5" fill="#ff7bbf" opacity=".9"/>' +
+      '<path d="M0 10 C-4 12 -4.4 18 -2.6 18 L2.6 18 C4.4 18 4 12 0 10 Z" fill="#2a0a3a"/>' +
+      '<path d="M-20 12 Q-16 15 -13 14 M20 12 Q16 15 13 14" stroke="#9a7c68" stroke-width="1.2" fill="none" opacity=".6"/>' +
+      '<path d="M-13 19 H13" stroke="#2a0a3a" stroke-width="1.4"/>' + teeth +
+      '<path d="M4 -24 L-2 -14 L3 -14 L-4 -3" stroke="#ff4fa3" stroke-width="2" fill="none" stroke-linejoin="round" opacity=".9"/>' +
+      '<path d="M-6 -20 q-2 6 1 9" stroke="#8a6a58" stroke-width=".8" fill="none" opacity=".6"/>' +
+      '<g transform="translate(-23,-21) scale(.62)"><g class="n9-sway">' + roseHead() + '</g></g>' +
+      '<g transform="translate(0,-31) scale(.8)">' + roseHead() + '</g>' +
+      '<g transform="translate(23,-21) scale(.62)"><g class="n9-sway n9-sway2">' + roseHead() + '</g></g>' +
+      '<path d="M-31 -16 q-8 4 -3 11 M31 -16 q8 4 3 11 M-14 -29 q4 -2 8 -1 M14 -29 q-4 -2 -8 -1" stroke="#23b45f" stroke-width="3" fill="none" stroke-linecap="round"/>' +
+      '</g></g>';
+  }
+  function roseHead() {
+    var p = '', i;
+    for (i = 0; i < 6; i++) p += '<path transform="rotate(' + (i * 60) + ')" d="M0 0 C-8 -2 -10 -11 -3 -13 C3 -14 7 -10 5 -3 Z" fill="' + (i % 2 ? '#c4153f' : '#e02a55') + '" stroke="#6e0a22" stroke-width=".6"/>';
+    return p + '<path d="M0 0 a2 2 0 1 1 3 2 a4 4 0 1 1 -7 -1" stroke="#ffb3c6" stroke-width="1" fill="none"/><circle r="1.6" fill="#ffe14a"/>';
   }
 
   function terrapin(x, y, sc, cls) {
@@ -108,14 +166,64 @@
       '<path d="M-6 -8 H6 L10 0 L6 8 H-6 L-10 0 Z M-18 0 H-10 M18 0 H10 M-6 -8 L-12 -12 M6 -8 L12 -12 M-6 8 L-12 12 M6 8 L12 12" stroke="#2a0a3a" stroke-width="1.2" fill="none"/></g></g>';
   }
 
-  function bear(x, y, sc, fill, cls, dly) {
-    /* a round, blobby dancing bear drawn for NautiK9 (not the classic outlined bears) */
-    return '<g class="n9-bear ' + (cls || '') + '" style="animation-delay:' + (dly || 0) + 's" transform="translate(' + x + ',' + y + ') scale(' + sc + ')">' +
-      '<g class="n9-bear-in"><path d="M-9 -4 Q-17 -12 -13 -22 M9 -4 Q17 -12 13 -22" stroke="' + fill + '" stroke-width="5" fill="none" stroke-linecap="round"/>' +
-      '<ellipse cx="0" cy="0" rx="11" ry="13" fill="' + fill + '"/><path d="M-5 12 L-7 22 M5 12 L7 22" stroke="' + fill + '" stroke-width="5.4" stroke-linecap="round"/>' +
-      '<circle cx="0" cy="-17" r="8.5" fill="' + fill + '"/><circle cx="-7" cy="-24" r="3.2" fill="' + fill + '"/><circle cx="7" cy="-24" r="3.2" fill="' + fill + '"/>' +
-      '<circle cx="-3" cy="-18" r="1.1" fill="#1a0614"/><circle cx="3" cy="-18" r="1.1" fill="#1a0614"/><path d="M-3 -13.6 Q0 -11 3 -13.6" stroke="#1a0614" stroke-width="1" fill="none"/>' +
-      '<ellipse cx="0" cy="3" rx="6" ry="6.4" fill="#fff6ea" opacity=".5"/></g></g>';
+  var POSES = [
+    { aL: 150, aR: -150, lL: 8, lR: -8, tilt: 0, rot: 0 },
+    { aL: 160, aR: -75, lL: 16, lR: -6, tilt: 7, rot: 4 },
+    { aL: 105, aR: -135, lL: 34, lR: 0, tilt: -6, rot: 10 },
+    { aL: 92, aR: -92, lL: 6, lR: -6, tilt: 0, rot: -10 },
+    { aL: 28, aR: -28, lL: 6, lR: -6, tilt: -14, rot: 0 },
+    { aL: 172, aR: -48, lL: 12, lR: -12, tilt: 5, rot: -4 }
+  ];
+  function limb(sx, sy, ang, len, w, col, edge) {
+    return '<g transform="rotate(' + ang + ' ' + sx + ' ' + sy + ')"><path d="M' + sx + ' ' + sy + ' l0 ' + len + '" stroke="' + edge + '" stroke-width="' + (w + 1.4) + '" stroke-linecap="round"/><path d="M' + sx + ' ' + sy + ' l0 ' + len + '" stroke="' + col + '" stroke-width="' + w + '" stroke-linecap="round"/>' +
+      '<circle cx="' + sx + '" cy="' + (sy + len) + '" r="' + (w * .62) + '" fill="' + shade(col, -.18) + '"/></g>';
+  }
+  function bear(x, y, sc, fill, cls, dly, pose) {
+    /* a furry, round dancing bear drawn for NautiK9: tufted outline, fur strokes, a bandana,
+       six postures. Not the classic outlined bears. */
+    var P = POSES[(pose || 0) % POSES.length], dk = shade(fill, -.38), lt = shade(fill, .38), seed = (x * .13 + y * .07 + (pose || 0));
+    var band = BEAR_COLORS[(BEAR_COLORS.indexOf(fill) + 2 + 6) % 6];
+    return '<g class="n9-bear ' + (cls || '') + '" style="animation-delay:' + (dly || 0) + 's" transform="translate(' + x + ',' + y + ') scale(' + sc + ') rotate(' + P.rot + ')">' +
+      '<g class="n9-bear-in">' +
+      '<ellipse cx="0" cy="25" rx="12" ry="2.6" fill="#12031c" opacity=".4"/>' +
+      limb(-5, 11, P.lL, 14, 6, fill, dk) + limb(5, 11, P.lR, 14, 6, fill, dk) +
+      limb(-9, -5, P.aL, 14, 5.4, fill, dk) + limb(9, -5, P.aR, 14, 5.4, fill, dk) +
+      '<path d="' + fur(0, 2, 11.5, 13.5, seed, 16, .1) + '" fill="' + fill + '" stroke="' + dk + '" stroke-width="1"/>' +
+      '<ellipse cx="0" cy="4" rx="6.6" ry="8" fill="' + lt + '" opacity=".6"/>' + furStrokes(0, 2, 11, 13, seed, 14, dk) +
+      '<g transform="rotate(' + P.tilt + ' 0 -9)">' +
+      '<circle cx="-7.6" cy="-24.4" r="3.8" fill="' + dk + '"/><circle cx="7.6" cy="-24.4" r="3.8" fill="' + dk + '"/><circle cx="-7.6" cy="-24.4" r="2" fill="' + lt + '" opacity=".7"/><circle cx="7.6" cy="-24.4" r="2" fill="' + lt + '" opacity=".7"/>' +
+      '<path d="' + fur(0, -17, 9.4, 8.8, seed + 2, 14, .12) + '" fill="' + fill + '" stroke="' + dk + '" stroke-width="1"/>' + furStrokes(0, -17, 9, 8.4, seed + 1, 9, dk) +
+      '<ellipse cx="0" cy="-14.4" rx="4.6" ry="3.6" fill="' + lt + '" stroke="' + dk + '" stroke-width=".6"/>' +
+      '<ellipse cx="0" cy="-15.8" rx="1.7" ry="1.2" fill="#2a0a3a"/><path d="M0 -14.6 v1.4 M0 -13.2 q-2 1.8 -3.4 .4 M0 -13.2 q2 1.8 3.4 .4" stroke="#2a0a3a" stroke-width=".7" fill="none" stroke-linecap="round"/>' +
+      '<circle cx="-3.4" cy="-18.6" r="1.7" fill="#fff"/><circle cx="3.4" cy="-18.6" r="1.7" fill="#fff"/><circle cx="-3.2" cy="-18.4" r="1" fill="#2a0a3a"/><circle cx="3.6" cy="-18.4" r="1" fill="#2a0a3a"/><circle cx="-3.5" cy="-18.9" r=".4" fill="#fff"/><circle cx="3.3" cy="-18.9" r=".4" fill="#fff"/>' +
+      '<path d="M-5 -21.4 q2 -1.4 4 -.2 M5 -21.4 q-2 -1.4 -4 -.2" stroke="' + dk + '" stroke-width=".8" fill="none" stroke-linecap="round"/>' +
+      '</g>' +
+      '<path d="M-6 -9 L6 -9 L0 -2 Z" fill="' + band + '" stroke="' + shade(band, -.4) + '" stroke-width=".6"/><circle cx="0" cy="-7" r=".8" fill="#fff" opacity=".8"/>' +
+      '</g></g>';
+  }
+
+  /* tie-dye cloth: folded-and-twisted look = radial pleats + rings, warped by turbulence, with fabric grain */
+  function dyeCloth(cx, cy, R, id, hues) {
+    var rings = '', wedges = '', i;
+    for (i = hues.length * 3; i >= 0; i--) {
+      rings += '<circle cx="' + cx + '" cy="' + cy + '" r="' + (R * (i + 1) / (hues.length * 3 + 1)).toFixed(1) + '" fill="' + hues[i % hues.length] + '"/>';
+    }
+    for (i = 0; i < 12; i++) {
+      var a = i * 30 * Math.PI / 180, a2 = (i * 30 + 15) * Math.PI / 180;
+      wedges += '<path d="M' + cx + ' ' + cy + ' L' + (cx + R * 1.3 * Math.cos(a)).toFixed(1) + ' ' + (cy + R * 1.3 * Math.sin(a)).toFixed(1) + ' L' + (cx + R * 1.3 * Math.cos(a2)).toFixed(1) + ' ' + (cy + R * 1.3 * Math.sin(a2)).toFixed(1) + ' Z" fill="#12031c" opacity=".16"/>';
+    }
+    return '<g filter="url(#' + id + 'W)">' + rings + wedges + '</g>';
+  }
+  function dyeFilters(id, scale, freq) {
+    return '<filter id="' + id + 'W" x="-20%" y="-20%" width="140%" height="140%"><feTurbulence type="fractalNoise" baseFrequency="' + freq + '" numOctaves="3" seed="7" result="n"/><feDisplacementMap in="SourceGraphic" in2="n" scale="' + scale + '" xChannelSelector="R" yChannelSelector="G"/></filter>' +
+      '<filter id="' + id + 'G" x="0" y="0" width="100%" height="100%"><feTurbulence type="fractalNoise" baseFrequency=".9" numOctaves="2" seed="3" result="g"/><feColorMatrix in="g" type="matrix" values="0 0 0 0 .1  0 0 0 0 .02  0 0 0 0 .15  0 0 0 .55 -.18"/></filter>';
+  }
+  function wordmark(x, y, sc) {
+    /* hand-lettered NautiK9: stacked offsets, a wobble filter, rainbow fill */
+    var t = function (dx, dy, fill, extra) { return '<text x="' + (x + dx) + '" y="' + (y + dy) + '" text-anchor="middle" font-size="' + (30 * sc) + '" font-weight="900" ' + extra + ' fill="' + fill + '">NautiK9</text>'; };
+    return '<g class="n9-word" font-family="\'Chalkboard SE\',\'Marker Felt\',\'Comic Neue\',\'Comic Sans MS\',\'Segoe Print\',casual,cursive" filter="url(#dhWobble)" aria-hidden="true">' +
+      t(2.2, 2.6, '#12031c', 'stroke="#12031c" stroke-width="5" stroke-linejoin="round"') +
+      t(0, 0, 'url(#dhLetters)', 'stroke="#fff7ec" stroke-width="1.6" stroke-linejoin="round" paint-order="stroke"') + '</g>';
   }
 
   /* ---------------- GREAT LAKES ---------------- */
@@ -132,6 +240,8 @@
       '<linearGradient id="lkSky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1b5b7a"/><stop offset=".6" stop-color="#4cb1bd"/><stop offset="1" stop-color="#ffd18a"/></linearGradient>' +
       '<linearGradient id="lkWater" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2398b0"/><stop offset=".35" stop-color="#0b4d68"/><stop offset=".75" stop-color="#05283b"/><stop offset="1" stop-color="#020f18"/></linearGradient>' +
       '<linearGradient id="lkShaft" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#e9fbff" stop-opacity=".5"/><stop offset="1" stop-color="#e9fbff" stop-opacity="0"/></linearGradient>' +
+      '<filter id="lkCaus" x="0" y="0" width="100%" height="100%"><feTurbulence type="fractalNoise" baseFrequency=".035 .09" numOctaves="2" seed="4"/><feColorMatrix type="matrix" values="0 0 0 0 .85  0 0 0 0 1  0 0 0 0 1  0 0 0 9 -4.7"/></filter>' +
+      '<linearGradient id="lkCausFade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient><mask id="lkCausMask"><rect y="86" width="360" height="80" fill="url(#lkCausFade)"/></mask>' +
       '<radialGradient id="lkScope" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#0b3b2b"/><stop offset="1" stop-color="#03150f"/></radialGradient>' +
       '<linearGradient id="lkSweep" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#5dffb0" stop-opacity="0"/><stop offset="1" stop-color="#5dffb0" stop-opacity=".85"/></linearGradient>' +
       '</defs>' +
@@ -144,6 +254,7 @@
       '<g class="n9-pod"><ellipse cx="52" cy="26" rx="15" ry="4.6" fill="#e9fbff" stroke="#0b4a60" stroke-width="1"/><path d="M41 25 Q52 9 63 25 Z" fill="rgba(190,240,255,.55)" stroke="#0b4a60" stroke-width="1"/><circle cx="46" cy="27" r="1.2" fill="#ff7a1a"/><circle cx="52" cy="28" r="1.2" fill="#ff7a1a"/><circle cx="58" cy="27" r="1.2" fill="#ff7a1a"/><path d="M36 28 H24 M34 25 H26" stroke="#fff4c9" stroke-width="1.2" stroke-linecap="round" opacity=".7"/></g>' +
       /* water */
       '<rect y="86" width="360" height="114" fill="url(#lkWater)"/>' +
+      '<g mask="url(#lkCausMask)"><rect class="n9-caustic" x="-40" y="86" width="440" height="80" filter="url(#lkCaus)" opacity=".34"/></g>' +
       '<g class="n9-shafts"><polygon points="40,86 70,86 130,200 70,200" fill="url(#lkShaft)" opacity=".5"/><polygon points="130,86 150,86 230,200 190,200" fill="url(#lkShaft)" opacity=".4"/><polygon points="250,86 280,86 330,200 270,200" fill="url(#lkShaft)" opacity=".45"/></g>' +
       '<path class="n9-wave" d="M-30 86 Q-10 82 10 86 T50 86 T90 86 T130 86 T170 86 T210 86 T250 86 T290 86 T330 86 T370 86 V92 H-30 Z" fill="#37b6cb" opacity=".7"/>' +
       '<g stroke="#e9fbff" stroke-opacity=".28" stroke-width=".8" fill="none"><path d="M0 112 Q90 106 180 112 T360 112"/><path d="M0 142 Q90 136 180 142 T360 142"/><path d="M0 168 Q90 162 180 168 T360 168"/></g>' +
@@ -197,44 +308,49 @@
   /* ---------------- DEADHEAD ---------------- */
   var BEAR_COLORS = ['#ff4fa3', '#ffe14a', '#3dff9a', '#8a5cff', '#ff8a3d', '#4fd8ff'];
 
+
   function dyeDefs() {
     return '<linearGradient id="n9dyeShirt" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff4fa3"/><stop offset=".35" stop-color="#ffe14a"/><stop offset=".7" stop-color="#3dff9a"/><stop offset="1" stop-color="#8a5cff"/></linearGradient>' +
-      '<radialGradient id="n9dyeShell" cx=".4" cy=".4" r=".8"><stop offset="0" stop-color="#ffe14a"/><stop offset=".45" stop-color="#ff4fa3"/><stop offset="1" stop-color="#6a2cff"/></radialGradient>';
+      '<radialGradient id="n9dyeShell" cx=".4" cy=".4" r=".8"><stop offset="0" stop-color="#ffe14a"/><stop offset=".45" stop-color="#ff4fa3"/><stop offset="1" stop-color="#6a2cff"/></radialGradient>' +
+      '<linearGradient id="dhLetters" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#ffe14a"/><stop offset=".3" stop-color="#ff7bbf"/><stop offset=".6" stop-color="#3dff9a"/><stop offset="1" stop-color="#4fd8ff"/></linearGradient>' +
+      '<filter id="dhWobble" x="-5%" y="-20%" width="110%" height="140%"><feTurbulence type="fractalNoise" baseFrequency=".05" numOctaves="2" seed="11" result="w"/><feDisplacementMap in="SourceGraphic" in2="w" scale="2.4" xChannelSelector="R" yChannelSelector="G"/></filter>' +
+      '<radialGradient id="dhVig" cx=".5" cy=".5" r=".75"><stop offset=".55" stop-color="#12031c" stop-opacity="0"/><stop offset="1" stop-color="#12031c" stop-opacity=".75"/></radialGradient>' +
+      dyeFilters('dh', 26, '.014') + dyeFilters('ds', 60, '.006');
   }
 
   function heroDead() {
+    var hues = ['#ff4fa3', '#ffe14a', '#3dff9a', '#4fd8ff', '#8a5cff', '#ff8a3d'];
     var bears = '';
-    for (var i = 0; i < 6; i++) bears += bear(30 + i * 60, 168, .62, BEAR_COLORS[i], i % 2 ? 'n9-hop2' : '', i * 0.13);
-    return '<svg class="n9-hero-svg" viewBox="0 0 360 200" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Tie-dye spirals, a rose-crowned skull, a lightning bolt, a terrapin and a line of dancing bears with Mack in a tie-dye shirt">' +
-      '<defs>' + dyeDefs() +
-      '<radialGradient id="dhBg" cx=".5" cy=".5" r=".75"><stop offset="0" stop-color="#ff4fa3"/><stop offset=".3" stop-color="#8a2cff"/><stop offset=".62" stop-color="#2a0a5a"/><stop offset="1" stop-color="#12031c"/></radialGradient>' +
-      '<linearGradient id="dhSpiral" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffe14a"/><stop offset=".33" stop-color="#3dff9a"/><stop offset=".66" stop-color="#4fd8ff"/><stop offset="1" stop-color="#ff4fa3"/></linearGradient></defs>' +
-      '<rect width="360" height="200" fill="url(#dhBg)"/>' +
-      '<g class="n9-spin" style="transform-origin:290px 52px"><g stroke="url(#dhSpiral)" stroke-width="3.4" stroke-linecap="round">' + spiral(290, 52, 4, 46) + '</g></g>' +
-      '<g class="n9-spin n9-spin-rev" style="transform-origin:62px 118px"><g stroke="url(#dhSpiral)" stroke-width="3" stroke-linecap="round" opacity=".9">' + spiral(62, 118, 3, 38) + '</g></g>' +
-      '<g class="n9-spin" style="transform-origin:180px 8px" opacity=".55"><g stroke="#ffe14a" stroke-width="2" stroke-linecap="round">' + spiral(180, 8, 3, 40) + '</g></g>' +
-      bolt(238, 70, 1.1, 'n9-flash') + bolt(96, 20, .7, 'n9-flash n9-flash2') +
-      skull(176, 84, 1.05, 'n9-skull') +
-      rose(124, 96, 1.1, 'n9-sway') + rose(230, 108, .9, 'n9-sway n9-sway2') + rose(334, 120, .8, 'n9-sway') +
-      terrapin(292, 124, .8, 'n9-crawl') +
+    for (var i = 0; i < 6; i++) bears += bear(28 + i * 61, 166, .66, BEAR_COLORS[i], i % 2 ? 'n9-hop2' : '', i * 0.13, i);
+    return '<svg class="n9-hero-svg" viewBox="0 0 360 200" preserveAspectRatio="xMidYMid slice" role="img" aria-label="NautiK9 in hand lettering over layered tie-dye, with a rose-crowned skull, lightning bolts, roses, a terrapin and six furry dancing bears with Mack in a tie-dye shirt">' +
+      '<defs>' + dyeDefs() + '</defs>' +
+      '<rect width="360" height="200" fill="#12031c"/>' +
+      '<g class="n9-spin n9-dye-slow" style="transform-origin:290px 50px">' + dyeCloth(290, 50, 120, 'dh', hues) + '</g>' +
+      '<g class="n9-spin n9-spin-rev n9-dye-slow" style="transform-origin:50px 130px" opacity=".92">' + dyeCloth(50, 130, 95, 'dh', hues.slice().reverse()) + '</g>' +
+      '<g class="n9-dye-slow" opacity=".75">' + dyeCloth(190, 215, 110, 'dh', hues.slice(2).concat(hues.slice(0, 2))) + '</g>' +
+      '<g class="n9-spin" style="transform-origin:290px 50px" stroke="url(#dhLetters)" stroke-width="2.4" stroke-linecap="round" opacity=".8">' + spiral(290, 50, 3.5, 40) + '</g>' +
+      '<rect width="360" height="200" filter="url(#dhG)" opacity=".5" style="mix-blend-mode:multiply"/>' +
+      '<rect width="360" height="200" fill="url(#dhVig)"/>' +
+      bolt(238, 70, 1.1, 'n9-flash') + bolt(96, 62, .7, 'n9-flash n9-flash2') +
+      rose(112, 100, 1.05, 'n9-sway') + rose(246, 112, .9, 'n9-sway n9-sway2') + rose(338, 118, .8, 'n9-sway') +
+      skull(180, 96, 1.0, 'n9-skull') +
+      terrapin(292, 142, .8, 'n9-crawl') +
+      wordmark(180, 34, 1) +
       bears +
       '<g transform="translate(180,184) scale(.8)">' + mack({ shirt: true, arms: true, flower: true }) + '</g>' +
       '</svg>';
   }
 
   function sceneDead() {
+    var hues = ['#ff4fa3', '#ffe14a', '#3dff9a', '#4fd8ff', '#8a5cff', '#ff8a3d'];
     var bears = '';
-    for (var i = 0; i < 8; i++) bears += bear(25 + i * 50, 780, .9, BEAR_COLORS[i % 6], i % 2 ? 'n9-hop2' : '', i * 0.11);
-    return '<svg viewBox="0 0 400 800" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><defs>' + dyeDefs() +
-      '<linearGradient id="dsSp" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffe14a"/><stop offset=".5" stop-color="#ff4fa3"/><stop offset="1" stop-color="#4fd8ff"/></linearGradient>' +
-      '<radialGradient id="dsA" cx=".2" cy=".15" r=".6"><stop offset="0" stop-color="#ff4fa3" stop-opacity=".9"/><stop offset="1" stop-color="#ff4fa3" stop-opacity="0"/></radialGradient>' +
-      '<radialGradient id="dsB" cx=".85" cy=".35" r=".6"><stop offset="0" stop-color="#8a5cff" stop-opacity=".95"/><stop offset="1" stop-color="#8a5cff" stop-opacity="0"/></radialGradient>' +
-      '<radialGradient id="dsC" cx=".25" cy=".7" r=".55"><stop offset="0" stop-color="#3dff9a" stop-opacity=".6"/><stop offset="1" stop-color="#3dff9a" stop-opacity="0"/></radialGradient>' +
-      '<radialGradient id="dsD" cx=".8" cy=".92" r=".5"><stop offset="0" stop-color="#ffe14a" stop-opacity=".6"/><stop offset="1" stop-color="#ffe14a" stop-opacity="0"/></radialGradient></defs>' +
-      '<rect width="400" height="800" fill="#14031d"/><rect width="400" height="800" fill="url(#dsA)"/><rect width="400" height="800" fill="url(#dsB)"/><rect width="400" height="800" fill="url(#dsC)"/><rect width="400" height="800" fill="url(#dsD)"/>' +
-      '<g class="n9-spin" style="transform-origin:330px 120px" opacity=".55"><g stroke="url(#dsSp)" stroke-width="5" stroke-linecap="round">' + spiral(330, 120, 5, 130) + '</g></g>' +
-      '<g class="n9-spin n9-spin-rev" style="transform-origin:50px 520px" opacity=".5"><g stroke="url(#dsSp)" stroke-width="5" stroke-linecap="round">' + spiral(50, 520, 5, 150) + '</g></g>' +
-      '<g class="n9-spin" style="transform-origin:300px 640px" opacity=".35"><g stroke="#ffe14a" stroke-width="3" stroke-linecap="round">' + spiral(300, 640, 4, 90) + '</g></g>' +
+    for (var i = 0; i < 8; i++) bears += bear(25 + i * 50, 772, .95, BEAR_COLORS[i % 6], i % 2 ? 'n9-hop2' : '', i * 0.11, i);
+    return '<svg viewBox="0 0 400 800" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><defs>' + dyeDefs() + '</defs>' +
+      '<rect width="400" height="800" fill="#14031d"/>' +
+      '<g class="n9-spin n9-dye-slow" style="transform-origin:330px 130px" opacity=".6">' + dyeCloth(330, 130, 300, 'ds', hues) + '</g>' +
+      '<g class="n9-spin n9-spin-rev n9-dye-slow" style="transform-origin:40px 560px" opacity=".55">' + dyeCloth(40, 560, 320, 'ds', hues.slice().reverse()) + '</g>' +
+      '<rect width="400" height="800" fill="#14031d" opacity=".45"/>' +
+      '<rect width="400" height="800" filter="url(#dsG)" opacity=".35" style="mix-blend-mode:multiply"/>' +
       rose(36, 260, 1.5, 'n9-sway') + rose(366, 420, 1.4, 'n9-sway n9-sway2') + rose(30, 640, 1.3, 'n9-sway') +
       bolt(340, 300, 1.2, 'n9-flash') + bolt(18, 120, .9, 'n9-flash n9-flash2') +
       terrapin(360, 700, 1.2, 'n9-crawl') + skull(34, 380, .8, 'n9-skull') +

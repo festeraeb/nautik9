@@ -54,6 +54,8 @@ body { position: relative; }
   .n9-wag { transform-box: fill-box; transform-origin: 0% 100%; animation: n9-wagk .5s ease-in-out infinite alternate; }
   .n9-flame { transform-box: fill-box; transform-origin: 50% 0; animation: n9-flame .18s ease-in-out infinite alternate; }
   .n9-blink { transform-box: fill-box; transform-origin: 50% 50%; animation: n9-blinkk 5s infinite; }
+  .n9-caustic { animation: n9-caus 14s linear infinite alternate; }
+  .n9-dye-slow { transform-box: view-box; }
   .n9-wreck { animation: n9-glow 2.4s ease-in-out infinite; }
   .n9-spin { animation: n9-rot 48s linear infinite; } .n9-spin-rev { animation-direction: reverse; animation-duration: 64s; }
   .n9-flash { animation: n9-flash 2.6s ease-in-out infinite; } .n9-flash2 { animation-delay: -1.3s; }
@@ -66,6 +68,7 @@ body { position: relative; }
   html[data-theme="dead"] body.n9-body::before { animation: n9-dye 18s ease-in-out infinite alternate; }
   html[data-theme="dead"] .btn-primary, html[data-theme="dead"] .tab-btn.active { background-size: 200% 200%; animation: n9-dye 6s ease-in-out infinite alternate; }
 }
+@keyframes n9-caus { from { transform: translateX(0); } to { transform: translateX(-36px); } }
 @keyframes n9-swell { from { transform: translateX(0); } to { transform: translateX(-20px); } }
 @keyframes n9-heel { 0%,100% { transform: rotate(-1.6deg) translateY(0); } 50% { transform: rotate(1.6deg) translateY(-2px); } }
 @keyframes n9-fill { from { transform: scaleX(1); } to { transform: scaleX(.94); } }
