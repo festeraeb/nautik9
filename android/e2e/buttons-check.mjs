@@ -134,6 +134,29 @@ const kg = await page.evaluate(async () => {
 });
 check('knowledge: an unknown claim is unknown', kg === 'unknown', kg);
 
+// Buzz over Tailscale (read-only here: no test posts under Thom's name) and the Board's gate.
+await page.evaluate(() => readNet());
+await page.waitForTimeout(600);
+const net = await page.evaluate(async () => (await (await fetch('/api/net')).json()));
+const bz = await page.evaluate(async () => {
+    const g = async u => { const r = await fetch(u); return { status: r.status, body: await r.json().catch(() => ({})) }; };
+    return { settings: await g('/api/buzz/settings'), rooms: await g('/api/buzz/rooms'), msgs: await g('/api/buzz/messages?channel=ops&limit=5'), q: await g('/api/buzz/questions?room=human-questions'), tasks: await g('/api/buzz/tasks'), fleet: (await fetch('/api/fleet/status')).status, board: await g('/api/board/status') };
+});
+if (net.tailscale) {
+    check('buzz rooms answer over Tailscale', bz.rooms.status === 200 && bz.rooms.body.rooms.length > 3, `${bz.rooms.status} ${bz.rooms.body.rooms ? bz.rooms.body.rooms.length + ' rooms' : bz.rooms.body.error}`);
+    check('buzz messages arrive oldest to newest', bz.msgs.status === 200 && bz.msgs.body.messages.length > 0 && bz.msgs.body.messages.every((m, i, a) => !i || Number(a[i - 1].created_at) <= Number(m.created_at)), String(bz.msgs.body.messages && bz.msgs.body.messages.length));
+    check('buzz open questions and tasks answer', bz.q.status === 200 && bz.tasks.status === 200 && Array.isArray(bz.tasks.body.tasks), `${bz.q.status}/${bz.tasks.status}`);
+    check('fleet answers over Tailscale', bz.fleet === 200, String(bz.fleet));
+} else {
+    check('Tailscale off: buzz and fleet say so plainly, at once', bz.rooms.status === 503 && bz.rooms.body.kind === 'no_tailscale' && bz.fleet === 503, `${bz.rooms.body.error} / fleet ${bz.fleet}`);
+}
+check('buzz address is set or derived, key state is only a boolean', typeof bz.settings.body.has_board_key === 'boolean' && !JSON.stringify(bz.settings.body).match(/key["']?\s*:\s*"/), JSON.stringify(Object.keys(bz.settings.body)));
+check('board without a key says to enter it', bz.board.body.kind === 'no_key' || bz.board.status === 200, `${bz.board.status} ${bz.board.body.kind || ''}`);
+await tab('buzz');
+await page.waitForTimeout(3000);
+const bzUi = await page.evaluate(() => ({ rooms: document.querySelectorAll('#bzRooms button').length, msgs: document.querySelectorAll('#bzStream .msg-bubble').length, status: document.getElementById('bzStatus').innerText }));
+check('Buzz tab shows rooms and messages (or the plain reason)', (bzUi.rooms > 0 && bzUi.msgs > 0) || /Tailscale|offline/i.test(bzUi.status), JSON.stringify(bzUi));
+
 check('no page errors', errors.length === 0, errors.join(' | '));
 for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.detail ? '  — ' + r.detail : ''}`);
 await browser.close();
