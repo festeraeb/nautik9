@@ -1,11 +1,13 @@
 //! HTTP API for the agent (all behind the token, so every caller here is the owner).
 //!
-//!   POST   /api/agent/chat                  {message, session_id?} -> TurnResult (502 when no model answers)
+//!   POST   /api/agent/chat                  {message, session_id?, theme?: "sail"|"dead", plain?: bool}
+//!                                           -> TurnResult (502 when no model answers).
+//!                                           `plain` is business prose; the pictures stay on `theme`.
 //!   GET    /api/agent/sessions              -> [SessionInfo]
 //!   GET    /api/agent/sessions/{id}         -> [StoredMessage]
 //!   DELETE /api/agent/sessions/{id}
 //!   POST   /api/agent/sessions/{id}/rate    {idx, rating: 1 | -1 | null}
-//!   POST   /api/agent/sessions/{id}/retry   -> TurnResult for the last user message, answered again
+//!   POST   /api/agent/sessions/{id}/retry   {theme?, plain?} -> TurnResult for the last user message, answered again
 //!   GET    /api/agent/schedules             -> [Schedule]
 //!   POST   /api/agent/schedules             {spec, prompt} -> Schedule (400 on an unknown spec)
 //!                                           {spec, playbook} instead adds a schedule that runs that approved playbook
@@ -60,7 +62,7 @@ use nautik9_agent::memory::{EmbedConfig, MemoryIndex};
 use nautik9_agent::store::Store;
 use nautik9_agent::tools::{search_once, McpServer, Registry, SearchBackend, Tool, ToolCtx};
 use nautik9_agent::playbook::{self, Asker, PbError, PlaybookTool, Trigger};
-use nautik9_agent::{Agent, AgentConfig};
+use nautik9_agent::{Agent, AgentConfig, ChatVoice, Theme};
 use nautik9_lemonade::LemonadeModule;
 use nautik9_wayfinder::WayfinderVault;
 use serde_json::{json, Value};
@@ -285,7 +287,11 @@ pub async fn chat(State(st): State<AppState>, Json(p): Json<Value>) -> Response 
     let Some(msg) = p["message"].as_str().filter(|m| !m.trim().is_empty()) else {
         return bad(StatusCode::BAD_REQUEST, "missing `message`");
     };
-    turn_response(a.turn(p["session_id"].as_str(), msg, true).await)
+    turn_response(a.turn_with(p["session_id"].as_str(), msg, true, chat_voice(&p)).await)
+}
+
+fn chat_voice(p: &Value) -> ChatVoice {
+    ChatVoice { theme: Theme::parse(p["theme"].as_str().unwrap_or("sail")), plain: p["plain"].as_bool().unwrap_or(false) }
 }
 
 /// `POST /api/agent/embeddings`: the same actions as the `embeddings` tool.
@@ -370,7 +376,7 @@ pub async fn rate(State(st): State<AppState>, Path(id): Path<String>, Json(p): J
 }
 
 /// Retry: drop everything from the last user message on and answer that message again.
-pub async fn retry(State(st): State<AppState>, Path(id): Path<String>) -> Response {
+pub async fn retry(State(st): State<AppState>, Path(id): Path<String>, body: Option<Json<Value>>) -> Response {
     let a = match agent_of(&st) {
         Ok(a) => a.clone(),
         Err(r) => return r,
@@ -388,7 +394,8 @@ pub async fn retry(State(st): State<AppState>, Path(id): Path<String>) -> Respon
     if let Err(e) = a.ctx.store.truncate(&id, last.idx).await {
         return bad(StatusCode::INTERNAL_SERVER_ERROR, e);
     }
-    turn_response(a.turn(Some(&id), &text, true).await)
+    let voice = body.as_ref().map(|b| chat_voice(&b.0)).unwrap_or_default();
+    turn_response(a.turn_with(Some(&id), &text, true, voice).await)
 }
 
 /// Stored chats as JSONL for fine-tuning: one line per session, OpenAI chat-with-tools

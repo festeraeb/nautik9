@@ -34,6 +34,46 @@ Use your tools to look things up instead of guessing: search and read notes befo
 Ask before deleting or replacing notes the user did not ask you to change. If a tool fails, say so plainly. Never invent facts, results or sources. \
 Your own knowledge stops before today (the date is at the end of this prompt): for weather, news, prices or anything current, use the weather or web_search tool and trust what it returns over what you remember.";
 
+/// Which picture set is on screen. The voice can be turned off without changing this.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Theme {
+    Sail,
+    Dead,
+}
+
+impl Theme {
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "dead" | "deadhead" => Theme::Dead,
+            _ => Theme::Sail,
+        }
+    }
+}
+
+/// Chat voice. `plain` is the quick off switch: business sentences, same pictures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChatVoice {
+    pub theme: Theme,
+    pub plain: bool,
+}
+
+impl Default for ChatVoice {
+    fn default() -> Self {
+        ChatVoice { theme: Theme::Sail, plain: false }
+    }
+}
+
+/// One instruction appended after persona and memory so it wins on tone only.
+pub fn voice_line(voice: ChatVoice) -> &'static str {
+    if voice.plain {
+        "Voice for this turn: plain business. Write short, direct, professional sentences. No sailing talk, no psychedelic talk, no nicknames, no jokes, no emoji. The pictures on screen are not your voice. Keep the same honesty rules and tools."
+    } else if voice.theme == Theme::Dead {
+        "Voice for this turn: a warm deadhead on the rail. A little color is welcome (roses, a long strange trip) but never song lyrics and never instead of the facts. Stay useful."
+    } else {
+        "Voice for this turn: Mighty Mack, a sailing dog at the helm. Nautical words are welcome (helm, deck, bearing, fair winds). Stay clear and useful."
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct AgentConfig {
     pub max_steps: usize,
@@ -361,6 +401,11 @@ impl Agent {
 
     /// One user turn in a session (created when `session` is None or unknown).
     pub async fn turn(&self, session: Option<&str>, user_text: &str, owner: bool) -> Result<TurnResult, ChatFailure> {
+        self.turn_with(session, user_text, owner, ChatVoice::default()).await
+    }
+
+    /// Same as [`Self::turn`], with the sailing-dog or deadhead voice, or plain business when `voice.plain`.
+    pub async fn turn_with(&self, session: Option<&str>, user_text: &str, owner: bool, voice: ChatVoice) -> Result<TurnResult, ChatFailure> {
         let store = &self.ctx.store;
         let err = |e: String| ChatFailure { error: e, attempts: vec![] };
         let sid = match session {
@@ -377,7 +422,10 @@ impl Agent {
             Some(p) => format!("{p}\n{user_text}"),
             None => user_text.to_string(),
         };
-        let system = json!({"role":"system","content": self.system_prompt(owner, &query).await});
+        let mut prompt = self.system_prompt(owner, &query).await;
+        prompt.push_str("\n\n");
+        prompt.push_str(voice_line(voice));
+        let system = json!({"role":"system","content": prompt});
         let out = self.run_loop(&system, &mut history, owner, false, self.cfg.max_steps).await;
         // Persist what happened, even when the model failed after some tool calls.
         let first_idx = store.append(&sid, &history[before..]).await.map_err(err)?;
@@ -415,5 +463,22 @@ mod tests {
     fn think_blocks_hidden_and_comments_stripped() {
         assert_eq!(visible_text("<think>plan</think>\nAnswer"), "Answer");
         assert_eq!(strip_html_comments("a<!-- hidden -->b"), "ab");
+    }
+
+    #[test]
+    fn plain_talk_drops_the_costume_and_themes_stay_distinct() {
+        let plain = voice_line(ChatVoice { theme: Theme::Dead, plain: true });
+        assert!(plain.contains("plain business"));
+        assert!(plain.contains("No sailing talk"));
+        assert!(!plain.to_lowercase().contains("deadhead"));
+        assert!(!plain.to_lowercase().contains("sailing dog"));
+        let sail = voice_line(ChatVoice { theme: Theme::Sail, plain: false });
+        assert!(sail.contains("sailing dog"));
+        let dead = voice_line(ChatVoice { theme: Theme::Dead, plain: false });
+        assert!(dead.contains("roses"));
+        assert_ne!(sail, dead);
+        assert_eq!(Theme::parse("deadhead"), Theme::Dead);
+        assert_eq!(Theme::parse("sail"), Theme::Sail);
+        assert_eq!(Theme::parse("nope"), Theme::Sail);
     }
 }

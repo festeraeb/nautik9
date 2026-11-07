@@ -25,6 +25,8 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.File;
+import java.net.HttpURLConnection;
+import java.net.URL;
 
 /**
  * window.NautiK9Android in the page. Only the app's own page (127.0.0.1) is ever

@@ -689,10 +689,15 @@ async fn handle_chat(
     use axum::response::IntoResponse;
     let prompt = payload["prompt"].as_str().unwrap_or("Status report");
     let offline = payload["offline"].as_bool().unwrap_or(false);
+    let voice = nautik9_agent::voice_line(nautik9_agent::ChatVoice {
+        theme: nautik9_agent::Theme::parse(payload["theme"].as_str().unwrap_or("sail")),
+        plain: payload["plain"].as_bool().unwrap_or(false),
+    });
+    let system = format!("You are Mighty Mack, a NautiDog and helpful companion (sometimes).\n\n{voice}");
 
     match state
         .lemonade
-        .chat(prompt, Some("You are Mighty Mack, a NautiDog and helpful companion (sometimes)."), offline)
+        .chat(prompt, Some(&system), offline)
         .await
     {
         Ok(a) => axum::Json(serde_json::json!({

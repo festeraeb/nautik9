@@ -32,4 +32,4 @@ pub mod playbook_ext;
 pub mod store;
 pub mod tools;
 
-pub use agent::{Agent, AgentConfig, TurnResult};
+pub use agent::{Agent, AgentConfig, ChatVoice, Theme, TurnResult, voice_line};
