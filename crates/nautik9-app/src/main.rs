@@ -14,6 +14,7 @@ use nautik9_lemonade::{LemonadeConfig, LemonadeModule};
 use nautik9_wayfinder::{WayfinderModule, WayfinderVault};
 
 mod agent_api;
+mod apps_api;
 mod agent_ext;
 mod flow_api;
 mod auth;
@@ -377,6 +378,7 @@ fn build_router(state: AppState, token: String) -> axum::Router {
         .route("/api/agent/flows/{name}/hook", post(flow_api::flow_hook))
         // Webxdc mini apps and text to speech (own modules)
         .merge(webxdc_api::routes())
+        .merge(apps_api::routes())
         .merge(tts::routes())
         .layer(axum::middleware::from_fn_with_state(
             std::sync::Arc::new(token),
@@ -1231,6 +1233,59 @@ mod tests {
         let status = resp.status();
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         (status, serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
+    }
+
+    fn app_rt(dir: &std::path::Path) -> axum::Router {
+        app(dir).layer(axum::Extension(webxdc_api::Runtime { config_dir: dir.to_path_buf(), secret: TOKEN.to_string() }))
+    }
+
+    #[tokio::test]
+    async fn ui_theme_is_kept_in_the_server_config() {
+        let d = tempfile::tempdir().unwrap();
+        let a = app_rt(d.path());
+        let (s, _) = call(&a, "GET", "/api/ui", None, None).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+        let (_, v) = call(&a, "GET", "/api/ui", Some(TOKEN), None).await;
+        assert_eq!(v["theme"], "dark", "default is the original dark look");
+        let (s, _) = call(&a, "POST", "/api/ui", Some(TOKEN), Some(serde_json::json!({"theme":"neon"}))).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+        let (s, _) = call(&a, "POST", "/api/ui", Some(TOKEN), Some(serde_json::json!({"theme":"dead","plain":true}))).await;
+        assert_eq!(s, StatusCode::OK);
+        let a2 = app_rt(d.path());
+        let (_, v) = call(&a2, "GET", "/api/ui", Some(TOKEN), None).await;
+        assert_eq!((v["theme"].as_str(), v["plain"].as_bool()), (Some("dead"), Some(true)), "survives a restart");
+        assert!(d.path().join("ui.json").exists());
+    }
+
+    #[tokio::test]
+    async fn wayfinder_host_answers_only_what_it_implements() {
+        let d = tempfile::tempdir().unwrap();
+        let a = app_rt(d.path());
+        let (s, l) = call(&a, "GET", "/api/apps", Some(TOKEN), None).await;
+        assert!(s == StatusCode::OK && l[0]["id"] == "wayfinder" && l[0]["not_available"].as_str().unwrap().contains("local files"), "{l}");
+        let inv = |cmd: &str| serde_json::json!({"cmd": cmd, "args": {}});
+        let (s, v) = call(&a, "POST", "/api/apps/wayfinder/invoke", None, Some(inv("get_system_info"))).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "{v}");
+        let (s, v) = call(&a, "POST", "/api/apps/wayfinder/invoke", Some(TOKEN), Some(inv("scan_directory"))).await;
+        assert_eq!(s, StatusCode::NOT_IMPLEMENTED);
+        assert!(v["error"].as_str().unwrap().contains("not available in NautiK9"), "{v}");
+        let (s, v) = call(&a, "POST", "/api/apps/wayfinder/invoke", Some(TOKEN), Some(inv("get_system_info"))).await;
+        assert!(s == StatusCode::OK && v["result"]["host"] == "nautik9", "{v}");
+        // no endpoint answers in this test: the chat is an error, never a canned reply
+        let (s, v) = call(&a, "POST", "/api/apps/wayfinder/invoke", Some(TOKEN), Some(serde_json::json!({"cmd":"chat_llama","args":{"prompt":"hi"}}))).await;
+        assert_eq!(s, StatusCode::BAD_GATEWAY, "{v}");
+        let (s, v) = call(&a, "POST", "/api/apps/wayfinder/invoke", Some(TOKEN), Some(serde_json::json!({"cmd":"check_lemonade_setup","args":{"base":"http://127.0.0.1:1/api"}}))).await;
+        assert_eq!(s, StatusCode::OK);
+        assert!(v["result"]["all_ok"] == false && v["result"]["problems"][0].as_str().unwrap().contains("not reachable"), "{v}");
+    }
+
+    #[test]
+    fn the_web_pages_are_served_without_a_token_and_bundled() {
+        for n in ["themes.css", "themes.js", "apps/wayfinder/index.html", "apps/wayfinder/n9-shim.js"] {
+            assert!(static_assets::lookup(n).is_some(), "{n} missing from the binary");
+        }
+        let idx = std::str::from_utf8(static_assets::lookup("apps/wayfinder/index.html").unwrap().1).unwrap();
+        assert!(idx.contains("n9-shim.js") && idx.contains("./assets/"), "relative paths + shim");
     }
 
     #[tokio::test]

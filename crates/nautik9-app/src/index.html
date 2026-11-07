@@ -8,10 +8,8 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="mobile-web-app-capable" content="yes">
     <title>NautiK9 • Samsung Galaxy S25 Ultra Fleet Cockpit</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/notes-plus.css">
+    <link rel="stylesheet" href="/static/themes.css">
     <style>
         :root {
             --bg: #0a0e17;
@@ -31,7 +29,7 @@
             --rose: #f43f5e;
             --text-main: #f8fafc;
             --text-sub: #94a3b8;
-            --text-muted: #64748b;
+            --text-muted: #94a3b8; /* was #64748b: 3.1:1 on cards, under AA */
         }
 
         * {
@@ -39,7 +37,6 @@
             margin: 0;
             padding: 0;
             -webkit-tap-highlight-color: transparent;
-            font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
         }
 
         body {
@@ -913,159 +910,23 @@
         .n9-app-row span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         #n9AppFrame { width: 100%; height: 360px; border: 1px solid rgba(148,163,184,.3); border-radius: 8px; margin-top: 8px; background: #fff; display: none; }
 
-        html[data-theme="sail"] {
-            --bg: #041525;
-            --surface: #0c2c40;
-            --surface-card: #12384f;
-            --surface-elevated: #184861;
-            --border: #2a6d86;
-            --border-highlight: #e2b15a;
-            --accent: #3ec6e0;
-            --accent-soft: rgba(62, 198, 224, 0.16);
-            --marine: #1a6f8a;
-            --brass: #e2b15a;
-            --emerald: #3dbe8c;
-            --text-main: #f6f1e4;
-            --text-sub: #c5d5df;
-            --text-muted: #8eabbb;
-        }
-        html[data-theme="dead"] {
-            --bg: #16021c;
-            --surface: #2c0836;
-            --surface-card: #3d0d32;
-            --surface-elevated: #54144a;
-            --border: #ff4fa3;
-            --border-highlight: #ffe14a;
-            --accent: #ff4fa3;
-            --accent-soft: rgba(255, 79, 163, 0.18);
-            --marine: #7a3cff;
-            --brass: #ffe14a;
-            --emerald: #3dff9a;
-            --rose: #ff2d55;
-            --text-main: #fff6ea;
-            --text-sub: #f3c6e4;
-            --text-muted: #d39ab8;
-        }
-        html[data-theme="sail"] body {
-            background:
-                radial-gradient(circle at 80% 0%, rgba(255, 214, 120, 0.28), transparent 28%),
-                linear-gradient(#7ec8e3 0%, #0b3a5b 28%, #041525 28%);
-        }
-        html[data-theme="dead"] body {
-            background:
-                radial-gradient(circle at 12% 8%, #ff4fa3 0, transparent 22%),
-                radial-gradient(circle at 88% 12%, #7a3cff 0, transparent 26%),
-                radial-gradient(circle at 70% 80%, #3dff9a 0, transparent 18%),
-                radial-gradient(circle at 20% 70%, #ffe14a 0, transparent 16%),
-                #16021c;
-            background-size: 140% 140%;
-            animation: n9-dye 16s ease-in-out infinite alternate;
-        }
-        @keyframes n9-dye { from { background-position: 0% 0%; } to { background-position: 8% 12%; } }
-        .n9-hero-wrap { margin: -4px -4px 12px; border-radius: 16px; overflow: hidden; border: 2px solid var(--brass); }
-        .n9-hero { display: block; width: 100%; height: 108px; }
-        .n9-hero[hidden] { display: none; }
-        .n9-wave { animation: n9-swell 3.2s ease-in-out infinite; }
-        .n9-wave2 { animation-duration: 4.4s; animation-direction: reverse; }
-        @keyframes n9-swell { from { transform: translateX(0); } to { transform: translateX(-18px); } }
-        .n9-bob-boat { transform-origin: 110px 74px; animation: n9-heel 3.6s ease-in-out infinite; }
-        @keyframes n9-heel { 50% { transform: rotate(-2.5deg) translateY(-2px); } }
-        .n9-skull { transform-origin: 180px 58px; animation: n9-float 3.4s ease-in-out infinite; }
-        @keyframes n9-float { 50% { transform: translateY(-4px); } }
-        .n9-dance { transform-origin: 310px 70px; animation: n9-hop 0.7s ease-in-out infinite; }
-        @keyframes n9-hop { 50% { transform: translateY(-6px) rotate(6deg); } }
-        .action-pill.on { outline: 2px solid var(--brass); background: var(--accent-soft); }
-        html[data-theme="sail"] .card, html[data-theme="dead"] .card,
-        html[data-theme="sail"] .top-cockpit, html[data-theme="dead"] .top-cockpit {
-            background: color-mix(in srgb, var(--surface) 90%, transparent);
-        }
-        @media (prefers-reduced-motion: reduce) {
-            html[data-theme="dead"] body, .n9-wave, .n9-bob-boat, .n9-skull, .n9-dance { animation: none; }
-        }
     </style>
     <script>
-        (function () {
-            try {
-                var t = localStorage.getItem('nautik9_theme');
-                var p = localStorage.getItem('nautik9_plain') === '1';
-                document.documentElement.dataset.theme = t === 'dead' ? 'dead' : 'sail';
-                document.documentElement.dataset.voice = p ? 'plain' : 'character';
-            } catch (e) {
-                document.documentElement.dataset.theme = 'sail';
-                document.documentElement.dataset.voice = 'character';
-            }
+        (function () { /* theme before first paint; themes.js builds the artwork */
+            var d = document.documentElement, t = 'dark', p = false;
+            try { t = localStorage.getItem('nautik9_theme') || 'dark'; p = localStorage.getItem('nautik9_plain') === '1'; } catch (e) {}
+            if (t === 'sail') t = 'lakes';
+            if (t !== 'lakes' && t !== 'dead') t = 'dark';
+            d.dataset.theme = t; d.dataset.voice = p ? 'plain' : 'character';
         })();
     </script>
 </head>
-<body>
+<body class="n9-body">
+    <div id="n9-scene" aria-hidden="true"></div>
 
     <!-- Top Cockpit Header -->
     <header class="top-cockpit">
-        <div class="n9-hero-wrap">
-            <svg class="n9-hero" id="heroSail" viewBox="0 0 360 108" role="img" aria-label="A sailing dog at the helm">
-                <defs>
-                    <linearGradient id="n9sky" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0" stop-color="#b7e6f5"/>
-                        <stop offset="1" stop-color="#1a6f8a"/>
-                    </linearGradient>
-                </defs>
-                <rect width="360" height="108" fill="url(#n9sky)"/>
-                <circle cx="312" cy="26" r="14" fill="#ffe08a"/>
-                <g class="n9-bob-boat">
-                    <path d="M48 74 L168 74 L152 90 H64 Z" fill="#e2b15a"/>
-                    <path d="M104 74 L104 34 L152 66 Z" fill="#f7f3ea"/>
-                    <path d="M104 74 L104 42 L64 66 Z" fill="#f0e2c4"/>
-                    <circle cx="104" cy="52" r="9" fill="#c9844a"/>
-                    <ellipse cx="95" cy="48" rx="3.2" ry="6" fill="#8a5a32"/>
-                    <ellipse cx="113" cy="48" rx="3.2" ry="6" fill="#8a5a32"/>
-                    <path d="M94 46 L104 34 L114 46 Z" fill="#f7f3ea"/>
-                    <rect x="102" y="34" width="4" height="8" fill="#1a6f8a"/>
-                    <circle cx="101" cy="52" r="1.1" fill="#1a120c"/>
-                    <circle cx="107" cy="52" r="1.1" fill="#1a120c"/>
-                    <path d="M99 56 Q104 59 109 56" stroke="#1a120c" fill="none" stroke-width="1"/>
-                    <circle cx="188" cy="78" r="12" fill="none" stroke="#f6f1e4" stroke-width="3"/>
-                    <path d="M188 66 V90 M176 78 H200" stroke="#f6f1e4" stroke-width="2"/>
-                </g>
-                <path class="n9-wave" d="M-20 78 Q 20 64 60 78 T 140 78 T 220 78 T 300 78 T 380 78 V108 H-20 Z" fill="#0e5870"/>
-                <path class="n9-wave n9-wave2" d="M-20 90 Q 30 78 80 90 T 180 90 T 280 90 T 400 90 V108 H-20 Z" fill="#083246"/>
-            </svg>
-            <svg class="n9-hero" id="heroDead" viewBox="0 0 360 108" hidden role="img" aria-label="A rose-crowned skull and a dancing dog">
-                <rect width="360" height="108" fill="#2a0633"/>
-                <circle cx="40" cy="20" r="36" fill="#ff4fa3" opacity="0.85"/>
-                <circle cx="330" cy="16" r="42" fill="#7a3cff" opacity="0.8"/>
-                <circle cx="200" cy="100" r="40" fill="#3dff9a" opacity="0.55"/>
-                <circle cx="90" cy="96" r="28" fill="#ffe14a" opacity="0.7"/>
-                <g class="n9-skull">
-                    <circle cx="180" cy="48" r="26" fill="#fff6ea"/>
-                    <ellipse cx="170" cy="48" rx="7" ry="8" fill="#1a0614"/>
-                    <ellipse cx="190" cy="48" rx="7" ry="8" fill="#1a0614"/>
-                    <path d="M180 56 L176 64 L184 64 Z" fill="#1a0614"/>
-                    <path d="M166 70 H194" stroke="#1a0614" stroke-width="2"/>
-                    <path d="M170 74 H190 M172 78 H188" stroke="#1a0614" stroke-width="1.4"/>
-                    <g fill="#ff2d55">
-                        <circle cx="148" cy="36" r="7"/>
-                        <circle cx="140" cy="44" r="5"/>
-                        <circle cx="156" cy="46" r="5"/>
-                        <circle cx="212" cy="36" r="7"/>
-                        <circle cx="220" cy="44" r="5"/>
-                        <circle cx="204" cy="46" r="5"/>
-                    </g>
-                    <circle cx="148" cy="36" r="2" fill="#ffe14a"/>
-                    <circle cx="212" cy="36" r="2" fill="#ffe14a"/>
-                </g>
-                <g class="n9-dance" fill="#c9844a">
-                    <circle cx="308" cy="62" r="8"/>
-                    <ellipse cx="300" cy="58" rx="3" ry="5"/>
-                    <ellipse cx="316" cy="58" rx="3" ry="5"/>
-                    <rect x="304" y="70" width="8" height="12" rx="3" fill="#7a3cff"/>
-                    <path d="M300 78 L292 88 M316 78 L326 70" stroke="#fff6ea" stroke-width="2" fill="none"/>
-                    <path d="M300 56 Q308 50 316 56" fill="#ff4fa3"/>
-                </g>
-                <circle cx="28" cy="70" r="2" fill="#fff"/>
-                <circle cx="250" cy="22" r="1.6" fill="#fff"/>
-                <circle cx="70" cy="24" r="1.4" fill="#fff"/>
-            </svg>
-        </div>
+        <div id="n9-hero" hidden></div>
         <div class="cockpit-top-row">
             <div class="avatar-bezel" id="avatarBezel" onclick="triggerBark()" title="Tap Mack to Bark!">
                 <img src="" alt="Mack Companion Avatar" class="avatar-img">
@@ -1102,15 +963,7 @@
                 <span class="action-pill-icon">🔔</span>
                 <span>Ship's Bell</span>
             </button>
-            <button type="button" class="action-pill" id="themeSail" onclick="setLook('sail')">
-                <span class="action-pill-icon">⛵</span>
-                <span>Sailing dog</span>
-            </button>
-            <button type="button" class="action-pill" id="themeDead" onclick="setLook('dead')">
-                <span class="action-pill-icon">🌹</span>
-                <span>Deadhead</span>
-            </button>
-            <button type="button" class="action-pill" id="plainTalk" onclick="togglePlain()" aria-pressed="false">
+            <button type="button" class="action-pill" id="plainTalk" onclick="N9T.togglePlain()" aria-pressed="false">
                 <span class="action-pill-icon">▤</span>
                 <span>Plain talk</span>
             </button>
@@ -1128,8 +981,12 @@
             <button class="tab-btn" onclick="switchTab('fleet', this)">🚀 Fleet Deck</button>
             <button class="tab-btn" onclick="switchTab('lemonade', this)">💬 Chat</button>
             <button class="tab-btn" onclick="switchTab('auto', this)">&#9881; Automations</button>
+            <button class="tab-btn" onclick="switchTab('apps', this)">&#129513; Apps</button>
+            <button class="tab-btn" onclick="switchTab('settings', this)">&#127912; Settings</button>
         </nav>
     </div>
+
+    <button type="button" id="themeQuick" onclick="N9T.cycle()" aria-label="Change theme"><span>&#127761;</span></button>
 
     <!-- 1. Helm Pane -->
     <section id="pane-helm" class="section-pane active">
@@ -1409,16 +1266,6 @@
                 <button class="btn-primary" onclick="doChat()">Send</button>
             </div>
         </div>
-        <div class="card" id="n9AppsCard">
-            <div class="card-header">
-                <span class="card-title">🧩 Mini apps (.xdc, offline, sandboxed, no network)</span>
-                <label class="btn-primary" style="padding:4px 10px;font-size:0.75rem;cursor:pointer">Add .xdc
-                    <input type="file" accept=".xdc,application/zip" style="display:none" onchange="n9UploadXdc(this)">
-                </label>
-            </div>
-            <div id="n9AppList" style="font-size:0.85rem;color:var(--text-sub)">Loading...</div>
-            <iframe id="n9AppFrame" sandbox="allow-scripts allow-same-origin" title="Mini app"></iframe>
-        </div>
     </section>
 
     <!-- 7. Automations: playbooks, flows, schedules (owner actions; the model cannot approve) -->
@@ -1455,6 +1302,51 @@
         <div class="card"><div class="card-header"><span class="card-title">Result</span></div><pre id="auOut">Nothing yet.</pre></div>
     </section>
 
+    <!-- Apps: built-in web apps (Wayfinder) and sandboxed .xdc mini apps -->
+    <section id="pane-apps" class="section-pane">
+        <div class="card" id="n9BuiltinApps">
+            <div class="card-header"><span class="card-title">&#129513; Apps</span></div>
+            <p style="font-size:0.8rem;color:var(--text-sub);margin-bottom:8px">Web apps that run inside NautiK9. Built-in apps are first-party and share this page's access; .xdc mini apps below are sandboxed with no network.</p>
+            <div id="n9BuiltinList" style="font-size:0.85rem;color:var(--text-sub)">Loading...</div>
+            <div id="n9WfNote" style="font-size:0.78rem;color:var(--text-sub);margin-top:6px"></div>
+            <iframe id="n9WfFrame" title="Wayfinder" sandbox="allow-scripts allow-same-origin allow-forms allow-modals" style="display:none;width:100%;height:70vh;min-height:420px;border:2px solid var(--border);border-radius:12px;margin-top:8px;background:#fff"></iframe>
+        </div>
+        <div class="card" id="n9AppsCard">
+            <div class="card-header">
+                <span class="card-title">🧩 Mini apps (.xdc, offline, sandboxed, no network)</span>
+                <label class="btn-primary" style="padding:4px 10px;font-size:0.75rem;cursor:pointer">Add .xdc
+                    <input type="file" accept=".xdc,application/zip" style="display:none" onchange="n9UploadXdc(this)">
+                </label>
+            </div>
+            <div id="n9AppList" style="font-size:0.85rem;color:var(--text-sub)">Loading...</div>
+            <iframe id="n9AppFrame" sandbox="allow-scripts allow-same-origin" title="Mini app"></iframe>
+        </div>
+    </section>
+
+    <!-- Settings: themes, voice, motion -->
+    <section id="pane-settings" class="section-pane">
+        <div class="card">
+            <div class="card-header"><span class="card-title">&#127912; Theme</span></div>
+            <div class="theme-grid" role="group" aria-label="Theme">
+                <button type="button" class="theme-card" data-theme-card="dark" onclick="N9T.set('dark')" aria-pressed="false"><span class="swatch sw-dark"></span><span class="tname">Cockpit dark</span><span class="tdesc">The original NautiK9 look: plain, dark, quick on a small screen.</span></button>
+                <button type="button" class="theme-card" data-theme-card="lakes" onclick="N9T.set('lakes')" aria-pressed="false"><span class="swatch sw-lakes"></span><span class="tname">Great Lakes</span><span class="tdesc">Mack the space-age sailor dog above a wreck, sonar sweeping, light shafts in deep water.</span></button>
+                <button type="button" class="theme-card" data-theme-card="dead" onclick="N9T.set('dead')" aria-pressed="false"><span class="swatch sw-dead"></span><span class="tname">Deadhead</span><span class="tdesc">Tie-dye spirals, roses, a lightning bolt, a terrapin and dancing bears. Original art.</span></button>
+            </div>
+            <p style="font-size:0.78rem;color:var(--text-sub)">Saved on this device and in the server's <code>ui.json</code>. The round button at the bottom right switches themes from any tab.</p>
+            <div class="n9-set-row">
+                <label for="motionSel">Motion</label>
+                <select id="motionSel" onchange="N9T.setMotion(this.value)"><option value="auto">Follow the phone (respects reduce motion)</option><option value="off">Always still</option></select>
+            </div>
+            <div class="n9-set-row">
+                <span>Chat voice:</span>
+                <button type="button" class="btn-primary" style="padding:4px 12px;font-size:0.8rem" onclick="N9T.togglePlain()" id="plainTalk2">Toggle plain talk</button>
+                <span id="voiceState"></span>
+            </div>
+            <p style="font-size:0.78rem;color:var(--text-sub)">Plain talk makes replies short business prose; the pictures stay. The theme only changes the tone of a reply (sailing words on Great Lakes, a warm deadhead on Deadhead), never the facts or tools.</p>
+        </div>
+    </section>
+
+    <script src="/static/themes.js"></script>
     <script>
         // ---- Access token: kept in this browser after the first visit ----
         const TOKEN_KEY = 'nautik9_token';
@@ -1703,6 +1595,7 @@
             if (tabId === 'senses') initSensors();
             if (tabId === 'fleet') loadFleetTelemetry();
             if (tabId === 'auto') loadAuto();
+            if (tabId === 'apps' && window.n9AppsOpen) n9AppsOpen();
         }
 
         function selectTier(card, tierName, engine) {
@@ -2468,48 +2361,13 @@
 
         function chatVoice() {
             return {
-                theme: document.documentElement.dataset.theme === 'dead' ? 'dead' : 'sail',
+                theme: window.N9T && N9T.current() === 'dead' ? 'dead' : 'sail',
                 plain: document.documentElement.dataset.voice === 'plain'
             };
         }
-        function paintLook() {
-            const dead = document.documentElement.dataset.theme === 'dead';
-            const plain = document.documentElement.dataset.voice === 'plain';
-            const sailBtn = document.getElementById('themeSail');
-            const deadBtn = document.getElementById('themeDead');
-            const plainBtn = document.getElementById('plainTalk');
-            if (sailBtn) sailBtn.classList.toggle('on', !dead);
-            if (deadBtn) deadBtn.classList.toggle('on', dead);
-            if (plainBtn) {
-                plainBtn.classList.toggle('on', plain);
-                plainBtn.setAttribute('aria-pressed', plain ? 'true' : 'false');
-                const label = plainBtn.querySelector('span:last-child');
-                if (label) label.innerText = plain ? 'Plain talk on' : 'Plain talk';
-            }
-            const heroS = document.getElementById('heroSail');
-            const heroD = document.getElementById('heroDead');
-            if (heroS) heroS.hidden = dead;
-            if (heroD) heroD.hidden = !dead;
-            const meta = document.querySelector('meta[name="theme-color"]');
-            if (meta) meta.setAttribute('content', dead ? '#2a0638' : '#041525');
-            const input = document.getElementById('chatInput');
-            if (input && document.activeElement !== input) {
-                input.placeholder = plain ? 'Business note...' : (dead ? 'Ask the rail...' : 'Ask Mack on the helm...');
-            }
-        }
-        function setLook(theme) {
-            document.documentElement.dataset.theme = theme === 'dead' ? 'dead' : 'sail';
-            try { localStorage.setItem('nautik9_theme', document.documentElement.dataset.theme); } catch (e) {}
-            paintLook();
-        }
-        function togglePlain() {
-            const on = document.documentElement.dataset.voice !== 'plain';
-            document.documentElement.dataset.voice = on ? 'plain' : 'character';
-            try { localStorage.setItem('nautik9_plain', on ? '1' : '0'); } catch (e) {}
-            paintLook();
-        }
+        function paintLook() { if (window.N9T) N9T.set(N9T.current()); }
         // Auto initialization
-        paintLook();
+        if (window.N9T) N9T.sync();
         readNet();
         initSensors();
         loadDeviceAndProviders();
@@ -2634,6 +2492,29 @@
             n9LoadApps();
         }
         n9LoadApps();
+
+        // ---- Apps tab: built-in apps ----
+        async function n9AppsOpen() {
+            const box = document.getElementById('n9BuiltinList');
+            try {
+                const res = await fetch('/api/apps');
+                const apps = await res.json();
+                box.innerHTML = '';
+                apps.forEach(a => {
+                    const row = document.createElement('div'); row.className = 'n9-app-row';
+                    row.innerHTML = '<span><b>' + esc(a.name) + '</b> <small>(built in)</small><br><small>' + esc(a.summary) + '</small></span>';
+                    const open = document.createElement('button'); open.className = 'btn-primary'; open.style.cssText = 'padding:4px 12px;font-size:0.8rem'; open.innerText = 'Open';
+                    open.onclick = () => n9OpenBuiltin(a);
+                    row.appendChild(open); box.appendChild(row);
+                });
+            } catch (e) { box.innerText = 'Apps unavailable: ' + e; }
+        }
+        function n9OpenBuiltin(a) {
+            const f = document.getElementById('n9WfFrame');
+            f.src = a.url; f.style.display = 'block';
+            document.getElementById('n9WfNote').innerHTML = '<b>Works here:</b> ' + esc(a.works.join(', ')) + '. <b>Not available here:</b> ' + esc(a.not_available) + ' Its layout is made for a desktop window: on a phone, turn the phone sideways or <a href="' + esc(a.url) + '" target="_blank" rel="noopener" style="color:var(--accent)">open it as a full page</a>.';
+            f.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
     </script>
 </body>
 </html>
