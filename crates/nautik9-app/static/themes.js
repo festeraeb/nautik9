@@ -216,7 +216,7 @@
       bolt(238, 70, 1.1, 'n9-flash') + bolt(96, 20, .7, 'n9-flash n9-flash2') +
       skull(176, 84, 1.05, 'n9-skull') +
       rose(124, 96, 1.1, 'n9-sway') + rose(230, 108, .9, 'n9-sway n9-sway2') + rose(334, 120, .8, 'n9-sway') +
-      terrapin(318, 148, .9, 'n9-crawl') +
+      terrapin(292, 124, .8, 'n9-crawl') +
       bears +
       '<g transform="translate(180,184) scale(.8)">' + mack({ shirt: true, arms: true, flower: true }) + '</g>' +
       '</svg>';

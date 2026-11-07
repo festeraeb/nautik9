@@ -97,6 +97,43 @@ if (slow) {
     }
 }
 
+// Themes: each card applies, draws its artwork, and is saved on the server.
+await tab('settings');
+const art = () => page.evaluate(() => ({ theme: document.documentElement.dataset.theme, hero: document.getElementById('n9-hero').innerHTML.length, scene: document.getElementById('n9-scene').innerHTML.length }));
+for (const t of ['lakes', 'dead', 'dark']) {
+    await press(`[data-theme-card="${t}"]`);
+    await page.waitForTimeout(500);
+    const a = await art();
+    const saved = await page.evaluate(async () => (await (await fetch('/api/ui')).json()).theme);
+    check(`theme ${t} applies, has ${t === 'dark' ? 'no' : 'its'} artwork, saved on the server`, a.theme === t && saved === t && (t === 'dark' ? a.hero === 0 : a.hero > 2000 && a.scene > 2000), JSON.stringify({ ...a, saved }));
+}
+await press('#themeQuick');
+await page.waitForTimeout(300);
+check('quick toggle cycles the theme', (await art()).theme === 'lakes', (await art()).theme);
+await press('[data-theme-card="dark"]');
+
+// Apps: Wayfinder loads inside the app and says what does not work here.
+await tab('apps');
+await page.waitForTimeout(800);
+await press('#n9BuiltinList button', 'Open');
+await page.waitForTimeout(4000);
+const wf = page.frames().find(f => f.url().includes('/static/apps/wayfinder/'));
+check('Wayfinder frame loads', !!wf, wf ? wf.url() : 'no frame');
+if (wf) {
+    const body = await wf.evaluate(() => document.body.innerText);
+    check('Wayfinder renders its UI and the host banner', /Wayfinder/.test(body) && /Running inside NautiK9/.test(body) && /Not available here/.test(body), body.slice(0, 160).replace(/\n/g, ' '));
+}
+const inv = await page.evaluate(async () => { const r = await fetch('/api/apps/wayfinder/invoke', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cmd: 'scan_directory', args: {} }) }); return { status: r.status, body: (await r.text()).slice(0, 120) }; });
+check('Wayfinder file commands are refused plainly', inv.status === 501, inv.body);
+
+// Knowledge graph API round trip through the page
+const kg = await page.evaluate(async () => {
+    const post = b => fetch('/api/agent/knowledge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).then(r => r.json());
+    const v = await post({ action: 'verify', claim: 'e2e_probe(nothing, nothing)' });
+    return v.verdict;
+});
+check('knowledge: an unknown claim is unknown', kg === 'unknown', kg);
+
 check('no page errors', errors.length === 0, errors.join(' | '));
 for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.detail ? '  — ' + r.detail : ''}`);
 await browser.close();
