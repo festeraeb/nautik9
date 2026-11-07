@@ -48,6 +48,14 @@ pub fn is_tailscale() -> bool {
 /// Plain text for a home endpoint that is only reachable over Tailscale while it is off.
 pub const HOME_UNREACHABLE_MESSAGE: &str = "can't reach home: Tailscale is off on the phone";
 
+/// The pre-check for a tailnet address: a first 2-second connect, then one patient 3-second retry.
+/// A phone that has been idle often needs the first packets just to wake the WireGuard path (or
+/// to fall back to a relay), so a single 2 s try called a reachable home machine "down". A refused
+/// connection still fails at once; only a silent black hole costs the full 5 s.
+pub async fn tailnet_reachable(url: &str) -> bool {
+    tcp_reachable(url, Duration::from_secs(2)).await || tcp_reachable(url, Duration::from_secs(3)).await
+}
+
 /// A 2-second TCP connect to the provider's host:port. A tailnet address with Tailscale stopped
 /// (or the VPN interface up but not connected) otherwise hangs for minutes before failing.
 pub async fn tcp_reachable(url: &str, timeout: Duration) -> bool {
@@ -421,8 +429,8 @@ impl LemonadeModule {
         for p in chain {
             if p.offline {
                 note_local_model_use();
-            } else if is_tailnet_url(&p.base_url) && !tcp_reachable(&p.base_url, Duration::from_secs(2)).await {
-                attempts.push(format!("{} ({}): skipped, can't reach home (no answer in 2 s; is Tailscale connected?)", p.name, p.base_url));
+            } else if is_tailnet_url(&p.base_url) && !tailnet_reachable(&p.base_url).await {
+                attempts.push(format!("{} ({}): skipped, can't reach home (no answer in 5 s; is Tailscale connected?)", p.name, p.base_url));
                 continue;
             }
             match self.try_provider(p, sys, prompt).await {
@@ -464,7 +472,7 @@ impl LemonadeModule {
             if p.offline {
                 note_local_model_use();
             } else if is_tailnet_url(&p.base_url) && !tcp_reachable(&p.base_url, Duration::from_secs(2)).await {
-                attempts.push(format!("{} ({}): skipped, can't reach home (no answer in 2 s; is Tailscale connected?)", p.name, p.base_url));
+                attempts.push(format!("{} ({}): skipped, can't reach home (no answer in 5 s; is Tailscale connected?)", p.name, p.base_url));
                 continue;
             }
             let model = match self.resolve_model(p).await {
