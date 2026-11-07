@@ -102,7 +102,8 @@ final class Bridge {
             int status = b.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
             boolean charging = status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL;
             return new JSONObject().put("level", level < 0 ? JSONObject.NULL : Math.round(100f * level / scale))
-                    .put("charging", charging).put("temp_c", b.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10.0).toString();
+                    .put("charging", charging).put("temp_c", b.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10.0)
+                    .put("power_save", ((android.os.PowerManager) ctx.getSystemService(Context.POWER_SERVICE)).isPowerSaveMode()).toString();
         } catch (Exception e) {
             return error(e.toString());
         }
@@ -170,6 +171,8 @@ final class Bridge {
             return new JSONObject().put("lat", loc.getLatitude()).put("lon", loc.getLongitude())
                     .put("accuracy_m", loc.hasAccuracy() ? loc.getAccuracy() : JSONObject.NULL)
                     .put("altitude_m", loc.hasAltitude() ? loc.getAltitude() : JSONObject.NULL)
+                    .put("heading_deg", loc.hasBearing() ? loc.getBearing() : JSONObject.NULL)
+                    .put("speed_mps", loc.hasSpeed() ? loc.getSpeed() : JSONObject.NULL)
                     .put("provider", provider).put("time_ms", loc.getTime()).toString();
         } catch (JSONException e) {
             return error(e.toString());

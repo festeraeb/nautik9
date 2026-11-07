@@ -16,6 +16,7 @@ use nautik9_wayfinder::{WayfinderModule, WayfinderVault};
 mod agent_api;
 mod apps_api;
 mod buzz_api;
+mod godseye_api;
 mod agent_ext;
 mod flow_api;
 mod auth;
@@ -402,6 +403,7 @@ fn build_router(state: AppState, token: String) -> axum::Router {
         .merge(webxdc_api::routes())
         .merge(apps_api::routes())
         .merge(buzz_api::routes())
+        .merge(godseye_api::routes())
         .merge(tts::routes())
         .layer(axum::middleware::from_fn_with_state(
             std::sync::Arc::new(token),
