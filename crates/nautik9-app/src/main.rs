@@ -358,6 +358,8 @@ fn build_router(state: AppState, token: String) -> axum::Router {
         .route("/api/agent/schedules/{id}", axum::routing::delete(agent_api::delete_schedule))
         .route("/api/agent/schedules/{id}/run", post(agent_api::run_schedule))
         .route("/api/agent/export", get(agent_api::export))
+        .route("/api/agent/knowledge", get(agent_api::knowledge_get).post(agent_api::knowledge_post))
+        .route("/api/agent/knowledge/rules", get(agent_api::knowledge_rules_get).put(agent_api::knowledge_rules_put))
         .route("/api/agent/embeddings", post(agent_api::embeddings))
         .route("/api/agent/journal", post(agent_api::journal))
         .route("/api/agent/web_search", post(agent_api::web_search))
@@ -1193,6 +1195,7 @@ mod tests {
             model: Some("m".into()),
             api_key: None,
             offline: false,
+            headers: None,
         }];
         cfg.timeout_seconds = 2;
         LemonadeModule::new(cfg)
@@ -1237,6 +1240,62 @@ mod tests {
 
     fn app_rt(dir: &std::path::Path) -> axum::Router {
         app(dir).layer(axum::Extension(webxdc_api::Runtime { config_dir: dir.to_path_buf(), secret: TOKEN.to_string() }))
+    }
+
+    #[tokio::test]
+    async fn export_metadata_carries_ratings_and_keeps_thumbed_down_chats() {
+        let d = tempfile::tempdir().unwrap();
+        let a = app(d.path());
+        let store = nautik9_agent::store::Store::open(&d.path().join("sessions.db"), None).unwrap();
+        let msgs = |q: &str, ans: &str| vec![serde_json::json!({"role":"user","content":q}), serde_json::json!({"role":"assistant","content":ans})];
+        let bad = store.create_session("first try").await.unwrap();
+        store.append(&bad, &msgs("two plus two", "five")).await.unwrap();
+        store.rate(&bad, 1, Some(-1)).await.unwrap();
+        let good = store.create_session("retry").await.unwrap();
+        store.append(&good, &msgs("two plus two", "four")).await.unwrap();
+        store.rate(&good, 1, Some(1)).await.unwrap();
+        async fn text(a: &axum::Router, uri: &str) -> String {
+            let req = Request::builder().uri(uri).header("authorization", format!("Bearer {}", TOKEN)).body(Body::empty()).unwrap();
+            let r = a.clone().oneshot(req).await.unwrap();
+            String::from_utf8(r.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap()
+        }
+        let plain = text(&a, "/api/agent/export?format=openai").await;
+        assert!(!plain.contains("metadata"), "off by default: existing exports are unchanged");
+        let t = text(&a, "/api/agent/export?format=openai&meta=1&rated=down").await;
+        let lines: Vec<serde_json::Value> = t.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(lines.len(), 1, "{t}");
+        assert_eq!(lines[0]["metadata"]["rating"], -1);
+        assert_eq!(lines[0]["metadata"]["session"], bad.as_str());
+        let t = text(&a, "/api/agent/export?format=openai&meta=1").await;
+        let ratings: Vec<i64> = t.lines().map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["metadata"]["rating"].as_i64().unwrap()).collect();
+        assert!(ratings.contains(&1) && ratings.contains(&-1), "a 👎 + Retry + 👍 pair is in one file: {ratings:?}");
+    }
+
+    #[tokio::test]
+    async fn knowledge_api_proves_contradicts_and_leaves_unknown_alone() {
+        let d = tempfile::tempdir().unwrap();
+        let a = app(d.path());
+        let k = "/api/agent/knowledge";
+        let (s, _) = call(&a, "GET", k, None, None).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+        let (s, e) = call(&a, "PUT", &format!("{k}/rules"), Some(TOKEN), Some(serde_json::json!({"rules":"above(X,Y) :- on(X,Y).\nnonsense line"}))).await;
+        assert!(s == StatusCode::BAD_REQUEST && e["error"].as_str().unwrap().contains("line 2"), "{e}");
+        let rules = "above(X, Y) :- on(X, Y).\nabove(X, Z) :- above(X, Y), above(Y, Z).\nfunctional works_at.\n";
+        let (s, _) = call(&a, "PUT", &format!("{k}/rules"), Some(TOKEN), Some(serde_json::json!({"rules": rules}))).await;
+        assert_eq!(s, StatusCode::OK);
+        for f in ["on(a, b)", "on(b, c)", "works_at(alice, acme)"] {
+            let (s, v) = call(&a, "POST", k, Some(TOKEN), Some(serde_json::json!({"action":"add","fact":f}))).await;
+            assert!(s == StatusCode::OK && v["result"] == "confirmed", "{v}");
+        }
+        let verify = |c: &str| serde_json::json!({"action":"verify","claim":c});
+        let (_, v) = call(&a, "POST", k, Some(TOKEN), Some(verify("above(a, c)"))).await;
+        assert_eq!(v["verdict"], "proven", "{v}");
+        let (_, v) = call(&a, "POST", k, Some(TOKEN), Some(verify("works_at(alice, initech)"))).await;
+        assert_eq!(v["verdict"], "contradicted", "{v}");
+        let (_, v) = call(&a, "POST", k, Some(TOKEN), Some(verify("above(c, a)"))).await;
+        assert_eq!(v["verdict"], "unknown", "{v}");
+        let (_, g) = call(&a, "GET", k, Some(TOKEN), None).await;
+        assert_eq!((g["facts"].as_array().unwrap().len(), g["rules"].as_u64()), (3, Some(2)));
     }
 
     #[tokio::test]

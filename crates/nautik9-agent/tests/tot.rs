@@ -36,7 +36,7 @@ async fn mock(seen: Arc<Mutex<Vec<Value>>>) -> String {
 }
 
 fn llm(base: &str) -> LemonadeModule {
-    LemonadeModule::new(LemonadeConfig { providers: vec![Provider { name: "mock".into(), base_url: base.into(), model: Some("mock-1".into()), api_key: None, offline: false }], timeout_seconds: 10, max_tokens: 256 })
+    LemonadeModule::new(LemonadeConfig { providers: vec![Provider { name: "mock".into(), base_url: base.into(), model: Some("mock-1".into()), api_key: None, offline: false, headers: None }], timeout_seconds: 10, max_tokens: 256 })
 }
 
 #[tokio::test]

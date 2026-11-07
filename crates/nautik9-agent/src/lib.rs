@@ -15,6 +15,7 @@
 //!   (`jade.*` in JavaScript). [`template`]: template notes. [`tot`]: the tree-of-thought reasoner.
 //! - [`playbook`], [`playbook_ext`]: Jade-style Playbooks (deterministic JSON task lists run through the tools).
 //! - [`flow`]: triggers (schedule, webhook, note_changed, sms_received) that fire approved playbooks or prompts.
+//! - [`knowledge`]: facts, rules and a Datalog reasoner whose answers are proven, contradicted or unknown.
 //! - [`html2md`]: page HTML to Markdown for `web_fetch`.
 
 pub mod agent;
@@ -22,6 +23,7 @@ pub mod flow;
 pub mod html2md;
 pub mod schedule;
 pub mod journal;
+pub mod knowledge;
 pub mod memory;
 pub mod playbook;
 pub mod sandbox;

@@ -32,7 +32,7 @@ async fn mock(seen: Arc<Mutex<Vec<Value>>>) -> String {
 
 fn agent(base: &str) -> Arc<Agent> {
     let llm = LemonadeModule::new(LemonadeConfig {
-        providers: vec![Provider { name: "mock".into(), base_url: base.into(), model: Some("mock-1".into()), api_key: None, offline: false }],
+        providers: vec![Provider { name: "mock".into(), base_url: base.into(), model: Some("mock-1".into()), api_key: None, offline: false, headers: None }],
         timeout_seconds: 10,
         max_tokens: 256,
     });

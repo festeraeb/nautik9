@@ -131,6 +131,11 @@ pub struct Provider {
     /// the "offline" request flag is allowed to use.
     #[serde(default)]
     pub offline: bool,
+    /// Extra request headers, for example OpenRouter's attribution pair
+    /// `{"HTTP-Referer": "https://github.com/festeraeb/nautik9", "X-Title": "NautiK9"}`.
+    /// Never printed by `/api/providers`.
+    #[serde(default)]
+    pub headers: Option<std::collections::BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -151,6 +156,7 @@ impl Default for LemonadeConfig {
                     model: None,
                     api_key: None,
                     offline: false,
+                    headers: None,
                 },
             ],
             timeout_seconds: 60,
@@ -284,9 +290,13 @@ impl LemonadeModule {
     }
 
     fn authed(&self, rb: reqwest::RequestBuilder, p: &Provider) -> reqwest::RequestBuilder {
-        match &p.api_key {
+        let rb = match &p.api_key {
             Some(k) if !k.is_empty() => rb.bearer_auth(k),
             _ => rb,
+        };
+        match &p.headers {
+            Some(h) => h.iter().fold(rb, |rb, (k, v)| rb.header(k.as_str(), v.as_str())),
+            None => rb,
         }
     }
 
@@ -659,8 +669,8 @@ mod tests {
     fn dead_config() -> LemonadeConfig {
         LemonadeConfig {
             providers: vec![
-                Provider { name: "a".into(), base_url: "http://127.0.0.1:1/v1".into(), model: None, api_key: None, offline: false },
-                Provider { name: "b".into(), base_url: "http://127.0.0.1:2/v1".into(), model: Some("x".into()), api_key: None, offline: false },
+                Provider { name: "a".into(), base_url: "http://127.0.0.1:1/v1".into(), model: None, api_key: None, offline: false, headers: None },
+                Provider { name: "b".into(), base_url: "http://127.0.0.1:2/v1".into(), model: Some("x".into()), api_key: None, offline: false, headers: None },
             ],
             timeout_seconds: 2,
             max_tokens: 50,
@@ -708,7 +718,7 @@ mod tests {
     async fn answer_is_labelled_with_returned_model_and_endpoint() {
         let url = mock_server().await;
         let mut cfg = dead_config();
-        cfg.providers.push(Provider { name: "mock".into(), base_url: url.clone(), model: None, api_key: None, offline: false });
+        cfg.providers.push(Provider { name: "mock".into(), base_url: url.clone(), model: None, api_key: None, offline: false, headers: None });
         let m = LemonadeModule::new(cfg);
         let a = m.chat("hi", None, false).await.unwrap();
         assert_eq!(a.reply, "hello from mock");
@@ -720,10 +730,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn provider_headers_and_key_are_sent_to_that_endpoint() {
+        // OpenRouter's attribution headers are plain per-provider headers. A one-shot raw server
+        // records the request it gets and answers with a chat completion.
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        let got = tokio::spawn(async move {
+            let (mut s, _) = l.accept().await.unwrap();
+            let mut buf = vec![0u8; 8192];
+            let mut n = 0;
+            loop {
+                let k = s.read(&mut buf[n..]).await.unwrap();
+                n += k;
+                let t = String::from_utf8_lossy(&buf[..n]).to_string();
+                if let Some(i) = t.find("\r\n\r\n") {
+                    let cl = t.to_lowercase().split("content-length: ").nth(1).and_then(|x| x.split("\r\n").next()).and_then(|x| x.trim().parse::<usize>().ok()).unwrap_or(0);
+                    if n >= i + 4 + cl {
+                        break;
+                    }
+                }
+                if k == 0 {
+                    break;
+                }
+            }
+            let body = r#"{"model":"anthropic/x","choices":[{"message":{"role":"assistant","content":"routed"}}]}"#;
+            s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).as_bytes()).await.unwrap();
+            String::from_utf8_lossy(&buf[..n]).to_lowercase()
+        });
+        let mut h = std::collections::BTreeMap::new();
+        h.insert("HTTP-Referer".to_string(), "https://example.invalid/app".to_string());
+        h.insert("X-Title".to_string(), "NautiK9".to_string());
+        let cfg = LemonadeConfig {
+            providers: vec![Provider { name: "openrouter".into(), base_url: format!("http://127.0.0.1:{port}/v1"), model: Some("anthropic/x".into()), api_key: Some("k-test".into()), offline: false, headers: Some(h) }],
+            timeout_seconds: 5,
+            max_tokens: 16,
+        };
+        let a = LemonadeModule::new(cfg).chat("hi", None, false).await.unwrap();
+        assert_eq!(a.reply, "routed");
+        let req = got.await.unwrap();
+        assert!(req.contains("x-title: nautik9") && req.contains("http-referer: https://example.invalid/app"), "{req}");
+        assert!(req.contains("authorization: bearer k-test"), "{req}");
+    }
+
+    #[tokio::test]
     async fn offline_flag_uses_only_offline_entries() {
         let url = mock_server().await;
         let mut cfg = dead_config();
-        cfg.providers.push(Provider { name: "local".into(), base_url: url, model: Some("m".into()), api_key: None, offline: true });
+        cfg.providers.push(Provider { name: "local".into(), base_url: url, model: Some("m".into()), api_key: None, offline: true, headers: None });
         let m = LemonadeModule::new(cfg);
         let a = m.chat("hi", None, true).await.unwrap();
         assert_eq!(a.provider, "local");

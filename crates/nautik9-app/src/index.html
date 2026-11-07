@@ -1165,6 +1165,19 @@
             <div id="tagFilter" style="margin-bottom:8px;"></div>
             <div id="vaultNotesList" class="notes-list"></div>
         </div>
+    
+        <div class="card" id="kgCard">
+            <div class="card-header"><span class="card-title">&#129504; Knowledge (facts, rules, reasoner)</span><button class="btn-primary" style="padding:4px 10px;font-size:0.75rem" onclick="kgLoad()">Refresh</button></div>
+            <p style="font-size:0.78rem;color:var(--text-sub);margin-bottom:6px">Facts like <code>works_at(alice, acme)</code>. A claim is <b>proven</b> (with its proof), <b>contradicted</b>, or <b>unknown</b>; unknown is never treated as false. Facts the model adds wait here until you confirm them.</p>
+            <div class="input-group"><input type="text" id="kgFact" placeholder="fact, e.g. on(a, b) or ~on(a, c)"><button class="btn-primary" onclick="kgDo('add',{fact:kgv('kgFact')})">Add</button></div>
+            <div class="input-group"><input type="text" id="kgClaim" placeholder="claim to check, e.g. above(a, c)"><button class="btn-primary" onclick="kgVerify()">Verify</button></div>
+            <pre id="kgOut" style="white-space:pre-wrap;font-size:0.78rem;margin:6px 0">Nothing yet.</pre>
+            <div id="kgFacts" style="font-size:0.82rem"></div>
+            <details style="margin-top:8px"><summary style="cursor:pointer;color:var(--accent)">Rules and constraints</summary>
+                <textarea id="kgRules" rows="6" style="width:100%;margin-top:6px" placeholder="above(X, Y) :- on(X, Y).&#10;functional works_at."></textarea>
+                <button class="btn-primary" style="margin-top:6px" onclick="kgSaveRules()">Save rules</button>
+            </details>
+        </div>
     </section>
 
     <!-- 4. Senses & Hardware Sensors Pane -->
@@ -1591,7 +1604,7 @@
             const targetPane = document.getElementById('pane-' + tabId);
             if (targetPane) targetPane.classList.add('active');
             if (tabId === 'sms') loadSmsInbox();
-            if (tabId === 'vault') loadNotes();
+            if (tabId === 'vault') { loadNotes(); if (window.kgLoad) kgLoad(); }
             if (tabId === 'senses') initSensors();
             if (tabId === 'fleet') loadFleetTelemetry();
             if (tabId === 'auto') loadAuto();
@@ -2492,6 +2505,47 @@
             n9LoadApps();
         }
         n9LoadApps();
+
+        // ---- Knowledge graph UI (API: /api/agent/knowledge) ----
+        function kgv(id) { return document.getElementById(id).value.trim(); }
+        async function kgDo(action, extra) {
+            const r = await fetch('/api/agent/knowledge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({ action }, extra || {})) });
+            const j = await r.json().catch(() => ({}));
+            document.getElementById('kgOut').innerText = r.ok ? JSON.stringify(j, null, 1) : 'Refused: ' + (j.error || r.status);
+            if (r.ok) kgLoad(true);
+            return j;
+        }
+        async function kgVerify() {
+            const j = await kgDo('verify', { claim: kgv('kgClaim') });
+            if (j && j.verdict) {
+                const mark = { proven: '\u2713 proven', contradicted: '\u2717 contradicted', unknown: '? unknown' }[j.verdict];
+                document.getElementById('kgOut').innerText = mark + ': ' + j.claim + '\n' + (j.proof ? j.proof.join('\n') : (j.reason || j.note || '')) + (j.rests_on_unconfirmed ? '\n(rests on facts you have not confirmed)' : '');
+            }
+        }
+        async function kgLoad(keepOut) {
+            const box = document.getElementById('kgFacts');
+            try {
+                const r = await fetch('/api/agent/knowledge'); const j = await r.json();
+                if (!r.ok) { box.innerText = 'Knowledge unavailable: ' + (j.error || r.status); return; }
+                box.innerHTML = (j.pending_confirmation ? '<div style="color:var(--brass)">' + esc(j.pending_confirmation) + ' proposed fact(s) wait for you. <button class="btn-mini" onclick="kgDo(\'confirm_all\')">Confirm all</button></div>' : '') +
+                    (j.contradictions && j.contradictions.length ? '<div style="color:var(--rose)">' + j.contradictions.length + ' contradiction(s): ' + esc(j.contradictions.map(c => c.facts.join(' vs ')).join('; ')) + '</div>' : '') +
+                    (j.facts.length ? '' : 'No facts yet.');
+                j.facts.forEach(f => {
+                    const row = document.createElement('div'); row.className = 'n9-app-row';
+                    row.innerHTML = '<span>' + esc(f.fact) + ' <small>(' + esc(f.status) + ', ' + esc(f.by) + ')</small></span>';
+                    if (f.status !== 'confirmed') { const c = document.createElement('button'); c.className = 'btn-mini'; c.innerText = 'Confirm'; c.onclick = () => kgDo('confirm', { fact: f.fact }); row.appendChild(c); }
+                    if (f.status !== 'rejected') { const x = document.createElement('button'); x.className = 'btn-mini'; x.innerText = 'Reject'; x.onclick = () => kgDo('reject', { fact: f.fact }); row.appendChild(x); }
+                    box.appendChild(row);
+                });
+                const rr = await fetch('/api/agent/knowledge/rules'); const rj = await rr.json();
+                if (rr.ok && document.activeElement !== document.getElementById('kgRules')) document.getElementById('kgRules').value = rj.rules || '';
+            } catch (e) { box.innerText = 'Knowledge unavailable: ' + e; }
+        }
+        async function kgSaveRules() {
+            const r = await fetch('/api/agent/knowledge/rules', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rules: document.getElementById('kgRules').value }) });
+            const j = await r.json().catch(() => ({}));
+            document.getElementById('kgOut').innerText = r.ok ? 'Rules saved.' : 'Not saved: ' + (j.error || r.status);
+        }
 
         // ---- Apps tab: built-in apps ----
         async function n9AppsOpen() {

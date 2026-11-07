@@ -411,6 +411,10 @@ pub async fn export(State(st): State<AppState>, Query(q): Query<HashMap<String, 
         return bad(StatusCode::BAD_REQUEST, "format must be openai or sharegpt");
     }
     let rated = q.get("rated").map(String::as_str).unwrap_or("any");
+    // meta=1 adds a `metadata` field per line (session id, title, times, the rating of the chat and of
+    // each rated message); with rated=down, thumbed-down chats are kept so a 👎 + Retry + 👍 pair
+    // (same prompt, two chats) can be built into DPO/KTO data.
+    let with_meta = q.get("meta").map(String::as_str) == Some("1");
     let mut lines = Vec::new();
     let sessions = match a.ctx.store.list_sessions().await {
         Ok(s) => s,
@@ -448,6 +452,15 @@ pub async fn export(State(st): State<AppState>, Query(q): Query<HashMap<String, 
                 .collect();
             json!({"conversations": conv})
         };
+        let mut line = line;
+        if with_meta {
+            let rating = if down { json!(-1) } else if up { json!(1) } else { Value::Null };
+            line["metadata"] = json!({
+                "session": s.id, "title": s.title, "created_at": s.created_at, "updated_at": s.updated_at,
+                "rating": rating,
+                "rated_messages": msgs.iter().filter_map(|m| m.rating.map(|r| json!({"idx": m.idx, "rating": r}))).collect::<Vec<_>>(),
+            });
+        }
         lines.push(line.to_string());
     }
     ([(axum::http::header::CONTENT_TYPE, "application/x-ndjson")], lines.join("\n") + if lines.is_empty() { "" } else { "\n" }).into_response()
@@ -583,5 +596,60 @@ pub async fn playbook_approve(State(st): State<AppState>, Path(name): Path<Strin
     match playbook::approve(&a.ctx, &a.tools, &name).await {
         Ok(sha) => Json(json!({"ok": true, "sha256": sha})).into_response(),
         Err(e) => pb_error(e),
+    }
+}
+
+// ---- knowledge graph (owner API; the model's `knowledge` tool can only propose) ----
+
+/// GET /api/agent/knowledge -> facts, rule count, pending proposals, contradictions.
+pub async fn knowledge_get(State(st): State<AppState>) -> Response {
+    let a = match agent_of(&st) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let v = match nautik9_agent::knowledge::run(&a.ctx.vault, "list", &json!({}), false).await {
+        Ok(v) => v,
+        Err(e) => return bad(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    let c = nautik9_agent::knowledge::run(&a.ctx.vault, "check", &json!({}), false).await.unwrap_or(json!({}));
+    let mut v = v;
+    v["contradictions"] = c["contradictions"].clone();
+    Json(v).into_response()
+}
+
+/// POST /api/agent/knowledge {action: add|confirm|confirm_all|reject|verify|why|query|check|list, ...}
+pub async fn knowledge_post(State(st): State<AppState>, Json(p): Json<Value>) -> Response {
+    let a = match agent_of(&st) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let action = p["action"].as_str().unwrap_or("");
+    match nautik9_agent::knowledge::run(&a.ctx.vault, action, &p, false).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => bad(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+/// GET/PUT /api/agent/knowledge/rules: the rules file; PUT refuses a broken file and names the line.
+pub async fn knowledge_rules_get(State(st): State<AppState>) -> Response {
+    let a = match agent_of(&st) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    match nautik9_agent::tools::note_by_path(&a.ctx.vault, nautik9_agent::knowledge::RULES_PATH).await {
+        Ok(n) => Json(json!({"rules": n.map(|n| n.content).unwrap_or_default()})).into_response(),
+        Err(e) => bad(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+pub async fn knowledge_rules_put(State(st): State<AppState>, Json(p): Json<Value>) -> Response {
+    let a = match agent_of(&st) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let text = p["rules"].as_str().unwrap_or("");
+    match nautik9_agent::knowledge::save_rules(&a.ctx.vault, text).await {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(e) => bad(StatusCode::BAD_REQUEST, e),
     }
 }

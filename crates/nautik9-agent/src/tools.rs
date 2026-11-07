@@ -95,6 +95,7 @@ impl Registry {
             Arc::new(HttpRequest),
             Arc::new(ChatHistory),
             Arc::new(SkillTool),
+            Arc::new(KnowledgeTool),
             Arc::new(crate::schedule::ScheduleTool),
             Arc::new(crate::memory::EmbeddingsTool),
             Arc::new(crate::template::TemplateTool),
@@ -837,6 +838,37 @@ impl Tool for ChatHistory {
             "search" => Ok(serde_json::to_string_pretty(&c.store.search(s(a, "query")?, 20).await?).unwrap_or_default()),
             other => Err(format!("unknown action `{other}`")),
         }
+    }
+}
+
+// ── knowledge graph (Jade/Knowledge/facts.jsonl + rules.dl; see `knowledge`) ──────────────
+
+struct KnowledgeTool;
+
+#[async_trait]
+impl Tool for KnowledgeTool {
+    fn name(&self) -> &str {
+        "knowledge"
+    }
+    fn description(&self) -> &str {
+        "The owner's fact graph with a reasoner. Check a factual claim before stating it: verify(claim) answers proven (with the facts and rules), contradicted, or unknown (the graph does not say; unknown is not false). Also query(pattern with Variables like above(bob, X)), why(claim), check (all contradictions), list, add(fact). Facts are written pred(a, b); a leading ~ is a negative fact. Facts you add are only proposals until the owner confirms them; you cannot confirm or reject."
+    }
+    fn parameters(&self) -> Value {
+        json!({"type":"object","properties":{
+            "action":{"type":"string","enum":["verify","query","why","check","list","add"]},
+            "claim":{"type":"string","description":"a ground fact for verify/why, e.g. works_at(alice, acme)"},
+            "pattern":{"type":"string","description":"for query, e.g. above(bob, X)"},
+            "fact":{"type":"string","description":"for add"}},"required":["action"]})
+    }
+    fn parallel(&self) -> bool {
+        false
+    }
+    async fn call(&self, a: &Value, c: &ToolCtx) -> Result<String, String> {
+        let action = s(a, "action")?;
+        if !matches!(action, "verify" | "query" | "why" | "check" | "list" | "add") {
+            return Err(format!("unknown action `{action}`"));
+        }
+        crate::knowledge::run(&c.vault, action, a, true).await.map(|v| v.to_string())
     }
 }
 

@@ -74,7 +74,7 @@ fn embed_cfg(url: &str) -> Option<EmbedConfig> {
 
 fn make_agent(chat_base: &str, memory: MemoryIndex, vault: Arc<WayfinderVault>, store: Store, cfg: AgentConfig) -> Agent {
     let llm = LemonadeModule::new(LemonadeConfig {
-        providers: vec![Provider { name: "mock".into(), base_url: chat_base.into(), model: Some("mock-1".into()), api_key: None, offline: false }],
+        providers: vec![Provider { name: "mock".into(), base_url: chat_base.into(), model: Some("mock-1".into()), api_key: None, offline: false, headers: None }],
         timeout_seconds: 10,
         max_tokens: 256,
     });

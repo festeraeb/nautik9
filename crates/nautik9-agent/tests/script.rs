@@ -21,7 +21,7 @@ async fn mock_llm() -> String {
 async fn make(cfg: ScriptConfig) -> (Arc<Agent>, Arc<WayfinderVault>) {
     let base = mock_llm().await;
     let vault = Arc::new(WayfinderVault::in_memory().unwrap());
-    let llm = LemonadeModule::new(LemonadeConfig { providers: vec![Provider { name: "mock".into(), base_url: base, model: Some("m".into()), api_key: None, offline: false }], timeout_seconds: 10, max_tokens: 64 });
+    let llm = LemonadeModule::new(LemonadeConfig { providers: vec![Provider { name: "mock".into(), base_url: base, model: Some("m".into()), api_key: None, offline: false, headers: None }], timeout_seconds: 10, max_tokens: 64 });
     let ctx = ToolCtx { vault: vault.clone(), store: Store::in_memory().unwrap(), http: reqwest::Client::new(), secrets: Arc::new(Default::default()), search: Arc::new(vec![]), owner: true, mcp_local: Arc::new(Default::default()), memory: Arc::new(nautik9_agent::memory::MemoryIndex::in_memory(None).unwrap()) };
     let agent = Arc::new_cyclic(|me| {
         let (reg, _) = Registry::with_extra(vec![Arc::new(ScriptTool { agent: me.clone(), cfg })]);
