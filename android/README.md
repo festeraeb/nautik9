@@ -4,12 +4,14 @@ The app runs the NautiK9 server inside the phone and shows its page in a WebView
 computer or adb once it is installed.
 
 - **Server**: `libnautik9.so` is the `nautik9-app` binary built for arm64. The app starts it as
-  `serve --bind 127.0.0.1 --sms-bridge app`; the vault and config folder are in the app's private
-  storage.
+  `serve --bind 0.0.0.0 --allow-from loopback,tailnet --sms-bridge app`; the vault and config
+  folder are in the app's private storage. The bind is wide but the server's source gate answers
+  only this phone, and the tailnet while remote care is on (see "Remote care").
 - **Offline model**: `libllama_server.so` is llama.cpp's `llama-server`. The page starts it on
   127.0.0.1:8341 when an answer is needed and a `.gguf` is in the app's `models` folder, and the
   app stops it after 10 idle minutes (it wakes in a few seconds when asked again). Swiping the
-  app away stops the model, the server and the foreground service. The page offers a download of
+  app away stops the model, the server and the foreground service (with remote care on, only the
+  model). The page offers a download of
   Qwen3-4B-Instruct-2507 Q4_K_M (2.5 GB) through the system download manager. On a Galaxy S25
   Ultra (CPU only) it generated about 20 tokens/s and read prompts at about 80 tokens/s.
 - **Texts**: the app holds READ_SMS and pushes the newest inbox rows to the server
@@ -27,6 +29,51 @@ are skipped at once ("skipped, the phone is offline"); `web_search`, `web_fetch`
 `http_request` answer "This needs an internet connection and the phone is offline right now.";
 the Fleet Deck and the model download say they need a connection. Nothing is invented offline.
 `GET /api/net` reports `online` and `local_model_idle_seconds`.
+
+## Remote care
+
+Remote care lets the home fleet reach the phone over Tailscale when adb cannot (Samsung turns
+Wireless debugging off at every reboot, and away from home there is no LAN). It is a switch in
+Settings > Remote care, off by default, saved as `files/config/remote_care.json`.
+
+- **Who gets in**: the server checks the peer address before the token. This phone (127.0.0.1)
+  always; a tailnet peer (100.64.0.0/10, fd7a:115c:a1e0::/48) only while the switch is on; Wi-Fi,
+  LAN and carrier peers never (403, empty body). Every route but `/api/health` still needs the
+  token. `/api/health` answers a tailnet peer even with the switch off, so the fleet can tell the
+  app is up.
+- **The card** shows the switch, the phone's Tailscale address and port, the running build, and
+  "Copy pairing line" (`http://<tailscale addr>:8340/?token=...` on the clipboard; the token is
+  not shown).
+- **After a reboot** (once the phone has been unlocked) or an app update, the app starts its
+  server again by itself when the switch is on, and keeps a notification "Remote care on: answers
+  the home fleet over Tailscale". Swiping the app away keeps the server running; only the
+  on-device model stops. The app must have been opened once since install, and a force stop
+  (Settings > Apps > Force stop) disables the boot start until it is opened again. If Samsung
+  puts NautiK9 in "Sleeping apps", the boot start can be blocked; set its battery use to
+  Unrestricted.
+- **Pushing an update** from t440 (the phone needs the switch on and Tailscale up):
+
+  ```bash
+  cd android/build && python3 -m http.server 8399 --bind 100.72.182.77 &   # serve the APK on the tailnet only
+  curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+       -d "{\"url\": \"http://100.72.182.77:8399/nautik9-0.9.0.apk\", \"sha256\": \"$(sha256sum nautik9-0.9.0.apk | cut -d' ' -f1)\"}" \
+       http://100.72.127.73:8340/api/admin/update
+  ```
+
+  The phone downloads it (plain http only to loopback or a tailnet address, https anywhere,
+  200 MB cap), checks the sha256 (a mismatch deletes it and answers 422), and queues an install.
+  Within 20 s the app opens Android's install confirmation and posts a notification "NautiK9
+  update ready"; **one tap on the phone installs it**. The first time, Android also asks to allow
+  "Install unknown apps" for NautiK9. Android only accepts an APK signed with the same key as the
+  installed app. Check the result with `GET /api/admin/version` (`app` is the APK version).
+  `GET /api/admin/pending` lists what is still waiting; a declined or failed install is reported
+  to `server.log` and removed.
+- **Still needs adb**: reading `server.log` / `llm.log`, and reading the token the first time
+  (`adb shell run-as com.festeraeb.nautik9 cat files/config/token`, or the pairing line from the
+  card sent to yourself).
+- **Open**: a carrier that lets subscribers in the same CGNAT pool reach each other could deliver
+  a 100.64/10 source over cellular; such a peer passes the gate but still needs the token. Checking
+  that the connection arrived on the Tailscale interface's own address would close that.
 
 ## Build
 
@@ -49,7 +96,7 @@ Build with `DEBUGGABLE=0` for a copy you give to someone else.
 
 ```bash
 adb connect <phone-ip>:<port>              # Developer options > Wireless debugging
-adb install -r android/build/nautik9-0.2.0.apk
+adb install -r android/build/nautik9-0.9.0.apk
 adb shell run-as com.festeraeb.nautik9 tail files/server.log files/llm.log
 adb shell run-as com.festeraeb.nautik9 cat files/config/providers.json
 # drive the page from this machine (Playwright / Chrome DevTools):
@@ -76,7 +123,6 @@ mode 600; `/api/providers` never returns keys.
 
 ## Not done yet
 
-- The server runs while the app is open; there is no background service yet, so texts are
-  drafted when you open the app, not as they arrive.
+- Texts are drafted when the page pushes the inbox (app open), not as they arrive.
 - No NPU or GPU use; the model runs on the CPU.
 - One model at a time (the first `.gguf` in the folder).
