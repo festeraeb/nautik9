@@ -111,12 +111,18 @@ public class MainActivity extends Activity {
         }
         // The user closed the app (swiped it away or pressed back out): stop the model and the
         // server so nothing runs in the background. A rotation or theme change keeps them.
-        // Off the main thread: stopAll() scans /proc and kills processes.
+        // Off the main thread: stopAll() scans /proc and kills processes. With remote care on, the server
+        // and its service stay up so the home fleet can still reach the phone; only the on-device model
+        // stops (it restarts on demand).
         if (isFinishing()) {
             final Context app = getApplicationContext();
             new Thread(() -> {
-                Engines.get(app).stopAll();
-                app.stopService(new Intent(app, EngineService.class));
+                if (Engines.remoteCareOn(app)) {
+                    Engines.get(app).stopLlm();
+                } else {
+                    Engines.get(app).stopAll();
+                    app.stopService(new Intent(app, EngineService.class));
+                }
             }, "engines-stop").start();
         }
         super.onDestroy();
