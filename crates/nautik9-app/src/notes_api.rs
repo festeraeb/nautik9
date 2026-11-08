@@ -376,6 +376,7 @@ mod tests {
             sms_bridge: crate::SmsBridge::Adb,
             agent: crate::agent_api::build_agent(dir, &dir.join("vault.db"), lemonade, Default::default()),
             scheduler: None,
+            admin: crate::admin_api::Admin::for_test(dir),
         }
     }
 
@@ -417,7 +418,7 @@ mod tests {
     #[tokio::test]
     async fn without_an_embedding_endpoint_search_is_keyword_and_says_so() {
         let d = tempfile::tempdir().unwrap();
-        let app = crate::build_router(state(d.path(), None), TOKEN.into());
+        let app = crate::build_router(state(d.path(), None), TOKEN.into()).layer(crate::source_gate::loopback_peer());
         call_json(&app, "POST", "/api/notes", Some(json!({"id": "n1", "title": "Lake survey", "content": "boat on the lake"}))).await;
         call_json(&app, "POST", "/api/notes", Some(json!({"id": "n2", "title": "Kitchen", "content": "bread and milk"}))).await;
         let (s, v) = call_json(&app, "GET", "/api/notes?q=lake", None).await;
@@ -441,7 +442,7 @@ mod tests {
     async fn with_an_embedding_endpoint_search_is_hybrid() {
         let d = tempfile::tempdir().unwrap();
         let url = mock_embeddings().await;
-        let app = crate::build_router(state(d.path(), Some(&url)), TOKEN.into());
+        let app = crate::build_router(state(d.path(), Some(&url)), TOKEN.into()).layer(crate::source_gate::loopback_peer());
         call_json(&app, "POST", "/api/notes", Some(json!({"id": "n1", "title": "Lake survey", "content": "boat on the lake"}))).await;
         call_json(&app, "POST", "/api/notes", Some(json!({"id": "n2", "title": "Kitchen", "content": "bread and milk"}))).await;
         // "ocean" appears in no note: only meaning can find the lake note.
@@ -464,7 +465,7 @@ mod tests {
     #[tokio::test]
     async fn a_dead_embedding_endpoint_falls_back_to_keyword_and_says_so() {
         let d = tempfile::tempdir().unwrap();
-        let app = crate::build_router(state(d.path(), Some("http://127.0.0.1:1/v1")), TOKEN.into());
+        let app = crate::build_router(state(d.path(), Some("http://127.0.0.1:1/v1")), TOKEN.into()).layer(crate::source_gate::loopback_peer());
         call_json(&app, "POST", "/api/notes", Some(json!({"id": "n1", "title": "Lake survey", "content": "boat on the lake"}))).await;
         let (_, v) = call_json(&app, "GET", "/api/notes?q=lake", None).await;
         assert_eq!(v["semantic"], json!(false), "{v}");
@@ -497,7 +498,7 @@ mod tests {
     #[tokio::test]
     async fn graph_endpoint_needs_the_token_and_returns_the_vault() {
         let d = tempfile::tempdir().unwrap();
-        let app = crate::build_router(state(d.path(), None), TOKEN.into());
+        let app = crate::build_router(state(d.path(), None), TOKEN.into()).layer(crate::source_gate::loopback_peer());
         call_json(&app, "POST", "/api/notes", Some(json!({"id": "n1", "title": "One", "content": "see [[Two]] #x"}))).await;
         call_json(&app, "POST", "/api/notes", Some(json!({"id": "n2", "title": "Two", "content": "hi"}))).await;
         let (s, _, _) = call(&app, "GET", "/api/notes/graph", None, None).await;
@@ -524,7 +525,7 @@ mod tests {
     #[tokio::test]
     async fn attachments_round_trip_with_token_and_never_escape_the_folder() {
         let d = tempfile::tempdir().unwrap();
-        let app = crate::build_router(state(d.path(), None), TOKEN.into());
+        let app = crate::build_router(state(d.path(), None), TOKEN.into()).layer(crate::source_gate::loopback_peer());
         // Something outside the folder that must stay unreachable.
         std::fs::write(d.path().join("secret.txt"), b"top secret").unwrap();
         std::fs::write(d.path().join("vault.png"), b"not an attachment").unwrap();
@@ -587,7 +588,7 @@ mod tests {
     #[tokio::test]
     async fn static_files_are_served_without_a_token() {
         let d = tempfile::tempdir().unwrap();
-        let app = crate::build_router(state(d.path(), None), TOKEN.into());
+        let app = crate::build_router(state(d.path(), None), TOKEN.into()).layer(crate::source_gate::loopback_peer());
         let (s, b, h) = call(&app, "GET", "/static/katex/katex.min.js", None, None).await;
         assert_eq!(s, StatusCode::OK);
         assert!(b.len() > 100_000);

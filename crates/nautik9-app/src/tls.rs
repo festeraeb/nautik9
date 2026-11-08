@@ -74,7 +74,7 @@ pub async fn serve(listener: std::net::TcpListener, app: axum::Router, files: &T
     let _ = rustls::crypto::ring::default_provider().install_default();
     let cfg = RustlsConfig::from_pem_file(&files.cert, &files.key).await.map_err(|e| format!("TLS cert/key unusable ({} / {}): {e}", files.cert.display(), files.key.display()))?;
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
-    axum_server::from_tcp_rustls(listener, cfg).map_err(|e| e.to_string())?.serve(app.into_make_service()).await.map_err(|e| e.to_string())
+    axum_server::from_tcp_rustls(listener, cfg).map_err(|e| e.to_string())?.serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await.map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
