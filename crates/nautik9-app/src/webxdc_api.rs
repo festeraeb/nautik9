@@ -178,6 +178,7 @@ pub(crate) mod tests {
             sms_bridge: crate::SmsBridge::App,
             agent: crate::agent_api::build_agent(dir, &dir.join("vault.db"), lemonade, Default::default()),
             scheduler: None,
+            admin: crate::admin_api::Admin::for_test(dir),
         };
         routes()
             .merge(crate::tts::routes())
