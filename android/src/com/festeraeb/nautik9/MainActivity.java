@@ -108,9 +108,15 @@ public class MainActivity extends Activity {
         }
         // The user closed the app (swiped it away or pressed back out): stop the model and the
         // server so nothing runs in the background. A rotation or theme change keeps them.
+        // With remote care on, the server and its service stay up so the home fleet can still
+        // reach the phone; only the on-device model stops (it restarts on demand).
         if (isFinishing()) {
-            Engines.get(this).stopAll();
-            stopService(new Intent(this, EngineService.class));
+            if (Engines.remoteCareOn(this)) {
+                Engines.get(this).stopLlm();
+            } else {
+                Engines.get(this).stopAll();
+                stopService(new Intent(this, EngineService.class));
+            }
         }
         super.onDestroy();
     }

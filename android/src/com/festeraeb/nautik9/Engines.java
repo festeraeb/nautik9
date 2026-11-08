@@ -11,10 +11,13 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 
 /**
- * Starts the two processes the app runs on the phone, both bound to 127.0.0.1:
- * the NautiK9 server (libnautik9.so) and, when a model file is present, llama.cpp's
- * llama-server (libllama_server.so) as the on-device, offline model endpoint.
- * Both binaries ship in the APK's lib/arm64-v8a and run from nativeLibraryDir.
+ * Starts the two processes the app runs on the phone: the NautiK9 server (libnautik9.so) and,
+ * when a model file is present, llama.cpp's llama-server (libllama_server.so, 127.0.0.1 only) as
+ * the on-device, offline model endpoint. Both binaries ship in the APK's lib/arm64-v8a and run
+ * from nativeLibraryDir.
+ *
+ * The server listens on 0.0.0.0 but its source gate (source_gate.rs) answers only this phone
+ * (loopback) and, while remote care is switched on, the tailnet. A Wi-Fi or carrier peer gets 403.
  */
 final class Engines {
     static final int SERVER_PORT = 8340;
@@ -70,13 +73,20 @@ final class Engines {
         Download.progress(ctx, modelsDir()); // finishes a download that completed while the app was away
         // The model is started on demand (the page asks for it when it needs an answer), not here:
         // cold start stays short and an idle phone does not hold a 2.5 GB model.
+        // After an app update an older server can still be answering: replace it with this build's.
+        if (alive(SERVER_PORT, "/api/health") && !serverIsCurrent()) {
+            stopServer();
+            for (int i = 0; i < 50 && alive(SERVER_PORT, "/api/health"); i++) sleep(100);
+        }
         if (!alive(SERVER_PORT, "/api/health")) {
             java.util.List<String> cmd = new java.util.ArrayList<>(java.util.Arrays.asList(
                     nativeDir + "/libnautik9.so",
                     "--device", "s25ultra",
                     "--vault-path", new File(files, "vault.db").getPath(),
                     "--config-dir", configDir.getPath(),
-                    "serve", "--bind", "127.0.0.1", "--port", String.valueOf(SERVER_PORT),
+                    "serve", "--bind", "0.0.0.0", "--port", String.valueOf(SERVER_PORT),
+                    "--allow-from", "loopback,tailnet",
+                    "--update-dir", new File(files, "update").getPath(),
                     "--sms-bridge", "app"));
             // config/fleet_url (one line) names the home fleet aggregator for the Fleet Deck; without
             // it the server's default (this phone's loopback) is asked and answers "unreachable".
@@ -87,6 +97,8 @@ final class Engines {
             }
             ProcessBuilder pb = new ProcessBuilder(cmd);
             pb.environment().put("HOME", files.getPath());
+            // Reported by GET /api/admin/version, so the fleet can see which app build runs.
+            pb.environment().put("NAUTIK9_APP_VERSION", appVersion());
             pb.redirectErrorStream(true);
             pb.redirectOutput(ProcessBuilder.Redirect.appendTo(new File(files, "server.log")));
             server = pb.start();
@@ -118,14 +130,88 @@ final class Engines {
         llmModel = null;
     }
 
-    /** Stop everything the app started. Used when the user closes the app. */
+    /** Stop everything the app started. Used when the user closes the app (remote care off). */
     synchronized void stopAll() {
         stopLlm();
+        stopServer();
+    }
+
+    private synchronized void stopServer() {
         if (server != null) {
             server.destroy();
             server = null;
         }
         for (int pid : pidsOf("libnautik9.so")) android.os.Process.killProcess(pid);
+    }
+
+    /** "0.9.0 (54)": this APK's versionName and versionCode. */
+    String appVersion() {
+        try {
+            android.content.pm.PackageInfo p = ctx.getPackageManager().getPackageInfo(ctx.getPackageName(), 0);
+            return p.versionName + " (" + p.getLongVersionCode() + ")";
+        } catch (Exception e) {
+            return "unknown";
+        }
+    }
+
+    /** True when the answering server was started by this app build (its version endpoint says so). */
+    private boolean serverIsCurrent() {
+        try {
+            String v = adminGet("/api/admin/version");
+            return v != null && appVersion().equals(new org.json.JSONObject(v).optString("app"));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** GET a token-gated path on this phone's server; null unless it answers 200. */
+    String adminGet(String path) {
+        return adminCall("GET", path, null);
+    }
+
+    /** POST JSON to a token-gated path on this phone's server; null unless it answers 200. */
+    String adminPost(String path, String json) {
+        return adminCall("POST", path, json);
+    }
+
+    private String adminCall(String method, String path, String json) {
+        try {
+            HttpURLConnection c = (HttpURLConnection) new URL("http://127.0.0.1:" + SERVER_PORT + path).openConnection();
+            c.setRequestMethod(method);
+            c.setRequestProperty("Authorization", "Bearer " + token());
+            c.setConnectTimeout(1000);
+            c.setReadTimeout(5000);
+            if (json != null) {
+                c.setDoOutput(true);
+                c.setRequestProperty("Content-Type", "application/json");
+                try (java.io.OutputStream o = c.getOutputStream()) {
+                    o.write(json.getBytes(StandardCharsets.UTF_8));
+                }
+            }
+            if (c.getResponseCode() != 200) return null;
+            java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+            try (java.io.InputStream in = c.getInputStream()) {
+                byte[] b = new byte[4096];
+                for (int n; (n = in.read(b)) > 0; ) buf.write(b, 0, n);
+            }
+            return new String(buf.toByteArray(), StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * The remote-care switch as the server saved it (config/remote_care.json). Read straight from
+     * the file so it works at boot, before the server runs.
+     */
+    static boolean remoteCareOn(Context c) {
+        try {
+            File f = new File(new File(c.getFilesDir(), "config"), "remote_care.json");
+            String t = new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8);
+            return new org.json.JSONObject(t).optBoolean("enabled", false);
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     /** Our own child processes whose command line names this binary. */
