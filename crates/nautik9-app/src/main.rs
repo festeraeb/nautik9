@@ -321,6 +321,11 @@ struct AppState {
     admin: admin_api::Admin,
 }
 
+/// Tests that flip the process-wide online/Tailscale flags hold this for writing; tests whose
+/// answers depend on those flags hold it for reading, so a flip never leaks into another test.
+#[cfg(test)]
+pub(crate) static NET_FLAGS: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
+
 #[cfg(test)]
 impl AppState {
     /// A state with no agent and no usable model, for tests of modules that only need the fleet address.
