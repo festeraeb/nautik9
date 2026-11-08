@@ -1460,6 +1460,14 @@
             <div class="input-group"><input type="password" id="geSetToken" autocomplete="off" placeholder="Track token (write only)"></div>
             <div class="n9-set-row"><button class="btn-primary" onclick="geSaveSettings()">Save</button><button class="btn-mini" onclick="geForgetToken()">Forget the token</button><span id="geSetMsg"></span></div>
         </div>
+        <div class="card" id="rcCard">
+            <div class="card-header"><span class="card-title">&#128295; Remote care</span></div>
+            <div class="n9-set-row"><label><input type="checkbox" id="rcOn" onchange="rcSet(this.checked)"> Let the home fleet reach this phone over Tailscale</label><span id="rcMsg"></span></div>
+            <div class="n9-set-row"><span id="rcAddr">Checking...</span></div>
+            <div class="n9-set-row"><span id="rcVer"></span></div>
+            <div class="n9-set-row"><button class="btn-primary" id="rcCopy" onclick="rcCopy()">Copy pairing line</button><span id="rcCopyMsg"></span></div>
+            <p style="font-size:0.78rem;color:var(--text-sub)">On: NautiK9 answers its home fleet over Tailscale, token needed, nothing from Wi-Fi. Off: this phone only.</p>
+        </div>
 
 
     </section>
@@ -1722,6 +1730,7 @@
             if (tabId === 'apps' && window.n9AppsOpen) n9AppsOpen();
             if (window.n9PollSet) n9PollSet(tabId);
             if (window.geTab) geTab(tabId);
+            if (tabId === 'settings' && window.rcLoad) rcLoad();
         }
 
         function selectTier(card, tierName, engine) {
@@ -2949,6 +2958,52 @@
         }
         async function geForgetToken() { await bzJson('/api/godseye/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: '' }) }); geEl('geSetMsg').innerText = 'Token forgotten.'; geSettingsFill(); }
         geSettingsFill();
+
+        // ---- Remote care (admin_api.rs): the switch, where the fleet reaches this phone, the running build ----
+        let rcState = null;
+        function rcEl(id) { return document.getElementById(id); }
+        function rcHost() {
+            const a = (rcState && rcState.tailnet_addrs) || [];
+            const v4 = a.find(x => x.indexOf(':') < 0);
+            return v4 || (a[0] ? '[' + a[0] + ']' : null);
+        }
+        function rcShow(s) {
+            rcState = s;
+            rcEl('rcOn').checked = !!s.enabled;
+            const host = rcHost();
+            rcEl('rcAddr').innerText = host
+                ? 'Tailscale address: ' + s.tailnet_addrs.join(', ') + ', port ' + s.port
+                : 'No Tailscale address on this phone right now (is Tailscale on?). Port ' + s.port + '.';
+            if (s.tailnet_allowed === false) rcEl('rcAddr').innerText += ' This server was started without Tailscale in its allowed sources, so the fleet cannot reach it even with the switch on.';
+            rcEl('rcCopy').disabled = !host;
+        }
+        async function rcLoad() {
+            const s = await bzJson('/api/admin/remote_care');
+            if (s.error) { rcEl('rcAddr').innerText = 'Not available: ' + s.error; return; }
+            rcShow(s);
+            const v = await bzJson('/api/admin/version');
+            if (!v.error) rcEl('rcVer').innerText = 'Running: server ' + v.version + ', build ' + v.git + ', built ' + v.built + (v.app ? ', app ' + v.app : '');
+        }
+        async function rcSet(on) {
+            rcEl('rcMsg').innerText = '';
+            const s = await bzJson('/api/admin/remote_care', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: on }) });
+            if (s.error) { rcEl('rcMsg').innerText = 'Not saved: ' + s.error; rcEl('rcOn').checked = !on; return; }
+            rcShow(s); rcEl('rcMsg').innerText = on ? 'On.' : 'Off.';
+        }
+        async function rcCopy() {
+            const host = rcHost(); if (!host) return;
+            // The token goes to the clipboard only; it is never written on the page.
+            const line = 'http://' + host + ':' + rcState.port + '/?token=' + getToken();
+            let ok = false;
+            try { await navigator.clipboard.writeText(line); ok = true; } catch (e) {
+                const t = document.createElement('textarea'); t.value = line; t.setAttribute('readonly', ''); t.style.position = 'fixed'; t.style.opacity = '0';
+                document.body.appendChild(t); t.select();
+                try { ok = document.execCommand('copy'); } catch (e2) { ok = false; }
+                t.remove();
+            }
+            rcEl('rcCopyMsg').innerText = ok ? 'Copied. It holds the token: paste it only somewhere private.' : 'Could not copy on this browser.';
+        }
+        rcLoad();
 
         // ---- Apps tab: built-in apps ----
         async function n9AppsOpen() {
