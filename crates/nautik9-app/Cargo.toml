@@ -29,6 +29,8 @@ rcgen = { version = "0.14.10", default-features = false, features = ["ring", "pe
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 axum-server = { version = "0.8.0", default-features = false, features = ["tls-rustls-no-provider"] }
 sha2 = "0.10"
+libc = "0.2"
+url = "2"
 rusqlite = { workspace = true }
 
 

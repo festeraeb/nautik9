@@ -425,6 +425,7 @@ fn build_router(state: AppState, token: String) -> axum::Router {
         .merge(apps_api::routes())
         .merge(buzz_api::routes())
         .merge(godseye_api::routes())
+        .merge(admin_api::routes())
         .merge(tts::routes())
         .layer(axum::middleware::from_fn_with_state(
             std::sync::Arc::new(token),
@@ -599,6 +600,7 @@ async fn serve_mobile_web(
     } {
         println!("Bridges: {n}");
     }
+    admin_api::clean_update_dir(&state.admin.update_dir);
     let state_remote_care = state.admin.remote_care().enabled;
     let app = build_router(state, token.clone()).layer(axum::Extension(webxdc_api::Runtime { config_dir: opts.config_dir.clone(), secret: token.clone() }));
 
