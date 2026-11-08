@@ -2906,7 +2906,10 @@
                 if (speed == null && dt > 0) { speed = d / dt; derived = true; }
                 if (heading == null && d > 3) { heading = geBearing(geLastFix, f); derived = true; }
             }
-            geLastFix = { lat: f.lat, lon: f.lon, time_ms: f.time_ms };
+            // The phone's provider repeats the last fix until it has a new one; send a repeat only as a
+            // 30-second heartbeat, so the home service sees movement, not the same point every 4 seconds.
+            if (geLastFix && f.time_ms === geLastFix.time_ms && Date.now() - geLastSent < 30000) return;
+            geLastFix = { lat: f.lat, lon: f.lon, time_ms: f.time_ms }; geLastSent = Date.now();
             const j = await bzJson('/api/godseye/fix', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lat: f.lat, lon: f.lon, alt_m: f.altitude_m, accuracy_m: f.accuracy_m, heading_deg: heading, speed_mps: speed, time_ms: f.time_ms }) });
             geEl('geTrackStatus').innerText = j.error ? ('Not sent: ' + j.error) : ('Sent to home over Tailscale at ' + new Date().toLocaleTimeString() + (f.accuracy_m != null ? ' (accuracy ' + Math.round(f.accuracy_m) + ' m' + (derived ? ', heading/speed worked out from the last two fixes' : '') + ')' : ''));
         }
