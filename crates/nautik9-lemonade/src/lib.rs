@@ -90,6 +90,13 @@ pub fn local_model_idle_seconds() -> Option<u64> {
     }
 }
 
+/// True when the first endpoint a request would try is an on-device one (a phone that is offline,
+/// or one with no remote provider first). The page uses it to wake the sleeping model before a
+/// request that must not be sent twice.
+pub fn local_is_first_hop(providers: &[Provider]) -> bool {
+    plan_chain(providers, false).0.first().is_some_and(|p| p.offline)
+}
+
 /// Providers to try for this request: `offline_only` keeps only local ones; when the device
 /// is offline, remote ones are listed in `skipped` instead of being tried.
 fn plan_chain<'a>(providers: &'a [Provider], offline_only: bool) -> (Vec<&'a Provider>, Vec<String>) {
@@ -704,6 +711,17 @@ mod tests {
         assert!(!err.error.contains("Vessel Status"));
         // generate() must also fail rather than invent text
         assert!(m.generate("send a text", None, false).await.is_err());
+    }
+
+    #[test]
+    fn local_first_hop_follows_the_chain_order() {
+        let remote = Provider { name: "r".into(), base_url: "http://example.invalid/v1".into(), model: None, api_key: None, offline: false };
+        let local = Provider { name: "l".into(), base_url: "http://127.0.0.1:3/v1".into(), model: None, api_key: None, offline: true };
+        assert!(local_is_first_hop(&[local.clone()]));
+        assert!(local_is_first_hop(&[local.clone(), remote.clone()]));
+        assert!(!local_is_first_hop(&[remote.clone(), local.clone()]));
+        assert!(!local_is_first_hop(&[remote]));
+        assert!(!local_is_first_hop(&[]));
     }
 
     #[test]
