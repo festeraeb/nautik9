@@ -34,7 +34,9 @@ public class MainActivity extends Activity {
         s.setAllowFileAccess(false);
         bridge = new Bridge(this, Engines.get(this));
         bridge.attach(web);
-        web.addJavascriptInterface(bridge, "NautiK9Android");
+        // Raw native object: every call needs the access token (see Bridge). The page's own script
+        // wraps it as window.NautiK9Android; sandboxed .xdc frames get this object but not the token.
+        web.addJavascriptInterface(bridge, "NautiK9Native");
         // The page talks to a server on this phone; it must keep working with no network at all.
         web.setNetworkAvailable(true);
         web.setWebViewClient(new WebViewClient() {

@@ -912,6 +912,23 @@
 
     </style>
     <script>
+        // window.NautiK9Android: the app's native object (registered as NautiK9Native) wrapped so that every
+        // call carries the access token. Sandboxed .xdc frames get the raw object too but cannot read this
+        // page's localStorage, so the native side refuses their calls (see Bridge.java).
+        (function () {
+            var N = window.NautiK9Native;
+            if (!N) return;
+            function cap() { try { return localStorage.getItem('nautik9_token') || ''; } catch (e) { return window.__n9tok || ''; } }
+            var w = {};
+            ['vibrate', 'torch', 'torchState', 'battery', 'requestLocation', 'readInbox', 'openComposer',
+             'offlineModelStatus', 'ensureOfflineModel', 'stopOfflineModel', 'network', 'httpAsync', 'downloadOfflineModel'
+            ].forEach(function (n) {
+                if (typeof N[n] === 'function') w[n] = function () { return N[n].apply(N, [cap()].concat([].slice.call(arguments))); };
+            });
+            window.NautiK9Android = w;
+        })();
+    </script>
+    <script>
         (function () { /* theme before first paint; themes.js builds the artwork */
             var d = document.documentElement, t = 'dark', p = false;
             try { t = localStorage.getItem('nautik9_theme') || 'dark'; p = localStorage.getItem('nautik9_plain') === '1'; } catch (e) {}

@@ -25,12 +25,19 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.File;
+import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URL;
 
 /**
- * window.NautiK9Android in the page. Only the app's own page (127.0.0.1) is ever
- * loaded in the WebView, so only that page can call these.
+ * The native side of window.NautiK9Android. It is registered as "NautiK9Native" and every method
+ * takes the app's access token as its first argument (the page's own wrapper adds it).
+ *
+ * Why: addJavascriptInterface exposes the object to EVERY frame of the page, including the
+ * opaque-origin sandboxed iframe that runs an untrusted .xdc mini app, and a @JavascriptInterface
+ * method is not told which frame called it, so the caller cannot be checked from inside the
+ * method. What a sandboxed frame cannot do is read the top page's localStorage (opaque origin)
+ * or its JS, so it cannot know the token. A call without the right token is refused.
  */
 final class Bridge {
     private final Context ctx;
@@ -48,9 +55,26 @@ final class Bridge {
         this.web = web;
     }
 
+    /** True only for a caller that holds the access token, which only the app's own page does. */
+    private boolean trusted(String cap) {
+        try {
+            if (cap == null || cap.isEmpty()) return false;
+            return java.security.MessageDigest.isEqual(
+                    engines.token().getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    cap.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        } catch (IOException | RuntimeException e) {
+            return false;
+        }
+    }
+
+    private static String refused() {
+        return error("not allowed: only the NautiK9 page may call the phone");
+    }
+
     /** Vibrate with a pattern of on/off milliseconds ("60,40,60"). {"ok":true} or {"error":...}. */
     @JavascriptInterface
-    public String vibrate(String pattern) {
+    public String vibrate(String cap, String pattern) {
+        if (!trusted(cap)) return refused();
         try {
             String[] parts = pattern.split(",");
             long[] ms = new long[parts.length + 1];
@@ -68,7 +92,8 @@ final class Bridge {
 
     /** Turn the back camera's flash on or off. {"ok":true,"on":bool} or {"error":...}. */
     @JavascriptInterface
-    public String torch(boolean on) {
+    public String torch(String cap, boolean on) {
+        if (!trusted(cap)) return refused();
         try {
             CameraManager cm = (CameraManager) ctx.getSystemService(Context.CAMERA_SERVICE);
             for (String id : cm.getCameraIdList()) {
@@ -88,13 +113,15 @@ final class Bridge {
     }
 
     @JavascriptInterface
-    public boolean torchState() {
+    public boolean torchState(String cap) {
+        if (!trusted(cap)) return false;
         return torchOn;
     }
 
     /** {"level":0-100,"charging":bool,"temp_c":x} from the system battery broadcast. */
     @JavascriptInterface
-    public String battery() {
+    public String battery(String cap) {
+        if (!trusted(cap)) return refused();
         try {
             Intent b = ctx.registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
             if (b == null) return error("no battery broadcast");
@@ -113,7 +140,8 @@ final class Bridge {
      * altitude_m, provider, time_ms}) or ({error}). Asks for the location permission first if needed.
      */
     @JavascriptInterface
-    public void requestLocation() {
+    public void requestLocation(String cap) {
+        if (!trusted(cap)) return;
         if (ctx.checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             ((Activity) ctx).runOnUiThread(() -> ((Activity) ctx).requestPermissions(new String[] {
                     android.Manifest.permission.ACCESS_FINE_LOCATION, android.Manifest.permission.ACCESS_COARSE_LOCATION}, 2));
@@ -183,7 +211,8 @@ final class Bridge {
 
     /** Newest inbox rows as a JSON array of {id, sender, body, date_ms}, or {"error": ...}. */
     @JavascriptInterface
-    public String readInbox(int limit) {
+    public String readInbox(String cap, int limit) {
+        if (!trusted(cap)) return refused();
         if (ctx.checkSelfPermission(android.Manifest.permission.READ_SMS) != PackageManager.PERMISSION_GRANTED) {
             return "{\"error\":\"SMS permission not granted\"}";
         }
@@ -207,7 +236,8 @@ final class Bridge {
 
     /** Opens the phone's composer with the reply filled in. Nothing is sent: the user presses send. */
     @JavascriptInterface
-    public boolean openComposer(String to, String body) {
+    public boolean openComposer(String cap, String to, String body) {
+        if (!trusted(cap)) return false;
         try {
             Intent i = new Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:" + Uri.encode(to)));
             i.putExtra("sms_body", body);
@@ -220,7 +250,8 @@ final class Bridge {
     }
 
     @JavascriptInterface
-    public String offlineModelStatus() {
+    public String offlineModelStatus(String cap) {
+        if (!trusted(cap)) return refused();
         JSONObject o = new JSONObject();
         try {
             File dir = engines.modelsDir();
@@ -249,13 +280,15 @@ final class Bridge {
 
     /** Start the on-device model if it is not running (returns at once; poll offlineModelStatus). */
     @JavascriptInterface
-    public void ensureOfflineModel() {
+    public void ensureOfflineModel(String cap) {
+        if (!trusted(cap)) return;
         engines.ensureLlm();
     }
 
     /** Stop the on-device model now (it restarts on demand). */
     @JavascriptInterface
-    public void stopOfflineModel() {
+    public void stopOfflineModel(String cap) {
+        if (!trusted(cap)) return;
         engines.stopLlm();
     }
 
@@ -264,7 +297,8 @@ final class Bridge {
      * "metered":bool}. "online" means the active network reached the internet (validated).
      */
     @JavascriptInterface
-    public String network() {
+    public String network(String cap) {
+        if (!trusted(cap)) return refused();
         return networkJson(ctx);
     }
 
@@ -329,7 +363,8 @@ final class Bridge {
      * answer as window.n9OnHttp(id, status, bodyText). Only paths on the local server are allowed.
      */
     @JavascriptInterface
-    public void httpAsync(String id, String method, String path, String contentType, String body) {
+    public void httpAsync(String cap, String id, String method, String path, String contentType, String body) {
+        if (!trusted(cap)) return;
         new Thread(() -> {
             int status = 0;
             String text;
@@ -371,7 +406,8 @@ final class Bridge {
     }
 
     @JavascriptInterface
-    public void downloadOfflineModel() {
+    public void downloadOfflineModel(String cap) {
+        if (!trusted(cap)) return;
         Download.start(ctx, engines.modelsDir());
     }
 
