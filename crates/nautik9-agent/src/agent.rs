@@ -125,6 +125,9 @@ pub struct Agent {
     learned_budget: AtomicUsize,
 }
 
+/// Added to the system prompt for the last model call, when the tool steps are used up.
+const CAP_NOTE: &str = "Tool steps are used up. Answer now from what you already have, and say plainly what is still unknown.";
+
 /// Whether a user message may need a tool: long or mentioning live data, the web, notes or an
 /// action. Short greetings and plain questions go to the model without tools.
 pub fn needs_tools(msg: &str) -> bool {
@@ -140,6 +143,20 @@ pub fn needs_tools(msg: &str) -> bool {
         "wreck", "sink", "sank", "tide", "sunset", "sunrise", "map", "distance", "convert", "calculate", "skill", "playbook", "flow", "sms", "text ",
     ];
     HINTS.iter().any(|h| m.contains(h))
+}
+
+/// The tools gate for one turn: the keyword test, widened for what a keyword test cannot see.
+/// A reply to the assistant's own question ("Yes, do it"), anything after tools were already used in
+/// this conversation, and a message that names a note path ("Summarize Boat/Log.md") all keep the
+/// tools, so a miss in the word list never removes the means to do what was just asked.
+pub fn needs_tools_in(history: &[Value], msg: &str) -> bool {
+    if needs_tools(msg) || msg.contains('/') || msg.to_lowercase().contains(".md") {
+        return true;
+    }
+    let prior = &history[..history.len().saturating_sub(1)];
+    let used_tools = prior.iter().any(|m| m["role"] == "tool" || m.get("tool_calls").is_some_and(|t| !t.is_null()));
+    let asked = prior.iter().rev().find(|m| m["role"] == "assistant").and_then(|m| m["content"].as_str()).is_some_and(|c| c.trim_end().ends_with('?'));
+    used_tools || asked
 }
 
 pub fn strip_html_comments(s: &str) -> String {
@@ -346,17 +363,23 @@ impl Agent {
         let all_tools = self.tools.schema(owner, read_only, &extra);
         let last_user = history.iter().rev().find(|m| m["role"] == "user").and_then(|m| m["content"].as_str()).unwrap_or("");
         let no_tools = json!([]);
-        let tools = if needs_tools(last_user) { &all_tools } else { &no_tools };
+        let tools = if needs_tools_in(history, last_user) { &all_tools } else { &no_tools };
         let mut traces = Vec::new();
         let mut last = None;
         let mut trimmed = 0;
         for step in 1..=max_steps {
             // At the cap: one last call with no tools and a plain instruction to answer now.
             let at_cap = step == max_steps && step > 1;
-            if at_cap {
-                history.push(json!({"role": "user", "content": "Tool steps are used up. Answer now from what you already have, and say plainly what is still unknown."}));
-            }
-            let (ans, t) = self.call_model(system, history, if at_cap { &no_tools } else { tools }).await?;
+            // The instruction rides in a one-call system prompt, not in the history: it must not be
+            // saved as a user message (Retry would pick it as the request) or become a turn boundary.
+            let capped_system;
+            let sys = if at_cap {
+                capped_system = json!({"role": "system", "content": format!("{}\n\n{}", system["content"].as_str().unwrap_or(""), CAP_NOTE)});
+                &capped_system
+            } else {
+                system
+            };
+            let (ans, t) = self.call_model(sys, history, if at_cap { &no_tools } else { tools }).await?;
             trimmed = t;
             let mut msg = ans.message.clone();
             msg.as_object_mut().map(|o| o.retain(|k, _| ["role", "content", "tool_calls"].contains(&k.as_str())));
@@ -457,6 +480,21 @@ mod tests {
         let (out, start) = fit_context(&sys, &h, 100_000, 50);
         assert_eq!(start, 0);
         assert!(out[3]["content"].as_str().unwrap().contains("cut to 50 characters"));
+    }
+
+    #[test]
+    fn tools_stay_for_followups_and_note_paths() {
+        let h = |v: Vec<Value>| v;
+        // keyword miss, but a path
+        assert!(needs_tools_in(&h(vec![json!({"role":"user","content":"Summarize Boat/Log.md"})]), "Summarize Boat/Log.md"));
+        // "Yes, do it" after the assistant asked for confirmation
+        let asked = h(vec![json!({"role":"user","content":"tidy that"}), json!({"role":"assistant","content":"Shall I edit it?"}), json!({"role":"user","content":"Yes, do it"})]);
+        assert!(needs_tools_in(&asked, "Yes, do it"));
+        // after tools were used earlier
+        let used = h(vec![json!({"role":"user","content":"x"}), json!({"role":"assistant","content":"","tool_calls":[{"id":"1"}]}), json!({"role":"tool","content":"r"}), json!({"role":"assistant","content":"done."}), json!({"role":"user","content":"thanks, ok"})]);
+        assert!(needs_tools_in(&used, "thanks, ok"));
+        // a plain greeting on a fresh session still takes the fast path
+        assert!(!needs_tools_in(&h(vec![json!({"role":"user","content":"hello there"})]), "hello there"));
     }
 
     #[test]
