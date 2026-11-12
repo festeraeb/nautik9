@@ -224,6 +224,10 @@ pub async fn reason(llm: &LemonadeModule, problem: &str, p: &TotParams) -> Resul
         cur = nodes[i].parent;
     }
     let answer = c.ask(ANSWER, &format!("Problem:\n{problem}\n\nReasoning path:\n{}", numbered(&plan))).await?;
+    // A reply that was only a <think> block passes the provider's non-empty check but is empty here.
+    if answer.trim().is_empty() {
+        return Err(TotError::Unusable("the model's final answer was empty once its thinking was removed".into()));
+    }
     Ok(TotResult {
         ok: true,
         problem: problem.to_string(),

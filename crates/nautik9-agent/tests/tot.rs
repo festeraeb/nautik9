@@ -96,3 +96,30 @@ async fn unusable_replies_are_reported_not_replaced() {
         _ => panic!("expected Unusable"),
     }
 }
+
+#[tokio::test]
+async fn a_final_answer_that_is_only_thinking_is_unusable_not_ok() {
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(|Json(req): Json<Value>| async move {
+            let sys = req["messages"][0]["content"].as_str().unwrap_or("").to_string();
+            let content = if sys.contains("ROLE: PROPOSE") {
+                "[\"a\", \"b\"]".to_string()
+            } else if sys.contains("ROLE: SCORE") {
+                "{\"score\": 8, \"reason\": \"ok\"}".to_string()
+            } else {
+                "<think>I considered the path but have nothing to add.</think>".to_string()
+            };
+            Json(json!({"model":"m","choices":[{"message":{"role":"assistant","content": content},"finish_reason":"stop"}]}))
+        }),
+    );
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+    let p = TotParams { branch: 2, beam: 1, depth: 1, budget: 20, max_tokens: 200 };
+    match reason(&llm(&format!("http://{addr}/v1")), "q", &p).await {
+        Err(TotError::Unusable(m)) => assert!(m.contains("final answer was empty"), "{m}"),
+        Ok(r) => panic!("ok:true with answer {:?}", r.answer),
+        Err(_) => panic!("expected Unusable"),
+    }
+}
