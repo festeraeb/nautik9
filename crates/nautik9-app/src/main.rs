@@ -1350,6 +1350,7 @@ mod tests {
         // no endpoint answers in this test: the chat is an error, never a canned reply
         let (s, v) = call(&a, "POST", "/api/apps/wayfinder/invoke", Some(TOKEN), Some(serde_json::json!({"cmd":"chat_llama","args":{"prompt":"hi"}}))).await;
         assert_eq!(s, StatusCode::BAD_GATEWAY, "{v}");
+        assert!(v["attempts"].as_array().is_some_and(|a| !a.is_empty()) && v["error"].as_str().unwrap().contains("no model endpoint answered"), "attempts are kept for the page: {v}");
         let (s, v) = call(&a, "POST", "/api/apps/wayfinder/invoke", Some(TOKEN), Some(serde_json::json!({"cmd":"check_lemonade_setup","args":{"base":"http://127.0.0.1:1/api"}}))).await;
         assert_eq!(s, StatusCode::OK);
         assert!(v["result"]["all_ok"] == false && v["result"]["problems"][0].as_str().unwrap().contains("not reachable"), "{v}");

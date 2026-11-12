@@ -5,8 +5,19 @@
 (function () {
   'use strict';
   function tok() { try { return localStorage.getItem('nautik9_token') || ''; } catch (e) { return ''; } }
+  // Model-backed commands go through the NautiK9 page's modelFetch (same origin, the parent of this
+  // frame): it wakes the on-device model when it is asleep and retries once. Anything else, or a frame
+  // with no such parent, uses the frame's own fetch.
+  function send(cmd, url, init) {
+    if (cmd === 'chat_llama') {
+      try {
+        if (window.parent !== window && typeof window.parent.modelFetch === 'function') return window.parent.modelFetch(url, init, null);
+      } catch (e) { /* cross-origin parent: fall through */ }
+    }
+    return fetch(url, init);
+  }
   async function call(cmd, args) {
-    var r = await fetch('/api/apps/wayfinder/invoke', {
+    var r = await send(cmd, '/api/apps/wayfinder/invoke', {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + tok() },
       body: JSON.stringify({ cmd: cmd, args: args || {} })
     });

@@ -80,7 +80,8 @@ async fn wayfinder_invoke(State(st): State<AppState>, Json(p): Json<Value>) -> R
             let sys = "You are Wayfinder's assistant, running inside NautiK9. Answer briefly and honestly.";
             match st.lemonade.chat(&prompt, Some(sys), false).await {
                 Ok(a) => Json(json!({"result": {"text": a.reply, "model_used": a.label(), "provider": a.provider, "model": a.model, "host": "nautik9"}})).into_response(),
-                Err(f) => err(StatusCode::BAD_GATEWAY, format!("{} ({})", f.error, f.attempts.join("; "))),
+                // `attempts` lets the page see that only the on-device model was asleep and wake it.
+                Err(f) => (StatusCode::BAD_GATEWAY, Json(json!({"ok": false, "error": format!("{} ({})", f.error, f.attempts.join("; ")), "attempts": f.attempts}))).into_response(),
             }
         }
         "check_lemonade_setup" => {
