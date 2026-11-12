@@ -1,6 +1,7 @@
 package com.festeraeb.nautik9;
 
 import android.app.Activity;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
@@ -108,9 +109,13 @@ public class MainActivity extends Activity {
         }
         // The user closed the app (swiped it away or pressed back out): stop the model and the
         // server so nothing runs in the background. A rotation or theme change keeps them.
+        // Off the main thread: stopAll() scans /proc and kills processes.
         if (isFinishing()) {
-            Engines.get(this).stopAll();
-            stopService(new Intent(this, EngineService.class));
+            final Context app = getApplicationContext();
+            new Thread(() -> {
+                Engines.get(app).stopAll();
+                app.stopService(new Intent(app, EngineService.class));
+            }, "engines-stop").start();
         }
         super.onDestroy();
     }

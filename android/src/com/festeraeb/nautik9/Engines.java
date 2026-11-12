@@ -63,39 +63,50 @@ final class Engines {
         return ggufs[0];
     }
 
-    /** Start whatever is not already answering. Blocks until the server answers or times out. */
-    synchronized void startAll() throws IOException {
+    /** Bumped by stopAll(): a startAll() that is still waiting for the server gives up when it changes. */
+    private volatile int stopGeneration;
+
+    /**
+     * Start whatever is not already answering. Blocks until the server answers, times out or
+     * stopAll() is called. The lock is held only while launching, never during the wait, so a
+     * stop (the user closing the app) is never stuck behind a slow start.
+     */
+    void startAll() throws IOException {
+        int generation = stopGeneration;
+        launchServer();
+        // Up to 60 s: a first start can be slow while the phone is busy.
+        for (int i = 0; i < 300 && generation == stopGeneration && !alive(SERVER_PORT, "/api/health"); i++) {
+            sleep(200);
+        }
+        if (generation == stopGeneration) startIdleWatcher();
+    }
+
+    private synchronized void launchServer() throws IOException {
         configDir.mkdirs();
         writeDefaultProviders();
         Download.progress(ctx, modelsDir()); // finishes a download that completed while the app was away
         // The model is started on demand (the page asks for it when it needs an answer), not here:
         // cold start stays short and an idle phone does not hold a 2.5 GB model.
-        if (!alive(SERVER_PORT, "/api/health")) {
-            java.util.List<String> cmd = new java.util.ArrayList<>(java.util.Arrays.asList(
-                    nativeDir + "/libnautik9.so",
-                    "--device", "s25ultra",
-                    "--vault-path", new File(files, "vault.db").getPath(),
-                    "--config-dir", configDir.getPath(),
-                    "serve", "--bind", "127.0.0.1", "--port", String.valueOf(SERVER_PORT),
-                    "--sms-bridge", "app"));
-            // config/fleet_url (one line) names the home fleet aggregator for the Fleet Deck; without
-            // it the server's default (this phone's loopback) is asked and answers "unreachable".
-            File fleetUrl = new File(configDir, "fleet_url");
-            if (fleetUrl.exists()) {
-                String u = new String(Files.readAllBytes(fleetUrl.toPath()), StandardCharsets.UTF_8).trim();
-                if (!u.isEmpty()) { cmd.add("--fleet-url"); cmd.add(u); }
-            }
-            ProcessBuilder pb = new ProcessBuilder(cmd);
-            pb.environment().put("HOME", files.getPath());
-            pb.redirectErrorStream(true);
-            pb.redirectOutput(ProcessBuilder.Redirect.appendTo(new File(files, "server.log")));
-            server = pb.start();
+        if ((server != null && server.isAlive()) || alive(SERVER_PORT, "/api/health")) return;
+        java.util.List<String> cmd = new java.util.ArrayList<>(java.util.Arrays.asList(
+                nativeDir + "/libnautik9.so",
+                "--device", "s25ultra",
+                "--vault-path", new File(files, "vault.db").getPath(),
+                "--config-dir", configDir.getPath(),
+                "serve", "--bind", "127.0.0.1", "--port", String.valueOf(SERVER_PORT),
+                "--sms-bridge", "app"));
+        // config/fleet_url (one line) names the home fleet aggregator for the Fleet Deck; without
+        // it the server's default (this phone's loopback) is asked and answers "unreachable".
+        File fleetUrl = new File(configDir, "fleet_url");
+        if (fleetUrl.exists()) {
+            String u = new String(Files.readAllBytes(fleetUrl.toPath()), StandardCharsets.UTF_8).trim();
+            if (!u.isEmpty()) { cmd.add("--fleet-url"); cmd.add(u); }
         }
-        // Up to 60 s: a first start can be slow while the phone is busy.
-        for (int i = 0; i < 300 && !alive(SERVER_PORT, "/api/health"); i++) {
-            sleep(200);
-        }
-        startIdleWatcher();
+        ProcessBuilder pb = new ProcessBuilder(cmd);
+        pb.environment().put("HOME", files.getPath());
+        pb.redirectErrorStream(true);
+        pb.redirectOutput(ProcessBuilder.Redirect.appendTo(new File(files, "server.log")));
+        server = pb.start();
     }
 
     /** Start the on-device model in the background if a model file is present. */
@@ -120,6 +131,7 @@ final class Engines {
 
     /** Stop everything the app started. Used when the user closes the app. */
     synchronized void stopAll() {
+        stopGeneration++;
         stopLlm();
         if (server != null) {
             server.destroy();
@@ -209,6 +221,9 @@ final class Engines {
     synchronized void startLlmIfModel() throws IOException {
         File model = modelFile();
         if (model == null || alive(LLM_PORT, "/health")) return;
+        // A process we already launched that is still loading its model answers no /health yet:
+        // that is liveness, not absence. Launching again would start a second llama-server.
+        if (llm != null && llm.isAlive()) return;
         if (Download.inProgress(ctx)) return;
         ProcessBuilder pb = new ProcessBuilder(
                 nativeDir + "/libllama_server.so",
