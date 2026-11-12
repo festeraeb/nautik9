@@ -300,13 +300,23 @@ impl LemonadeModule {
         }
     }
 
+    /// The picker's choice applies only to the provider whose model list fed the picker (the first
+    /// remote one, see `list_remote_models`); any other provider keeps its own model, because the
+    /// chosen id may not exist there.
+    fn picker_override(&self, p: &Provider, preferred: Option<String>) -> Option<String> {
+        let picker = self.config.providers.iter().find(|q| !q.offline)?;
+        if !p.offline && picker.name == p.name && picker.base_url == p.base_url {
+            preferred
+        } else {
+            None
+        }
+    }
+
     /// Model to request from `p`: the configured one, else the one the server
     /// reports as loaded (lemond health), else the first listed by /models.
     async fn resolve_model(&self, p: &Provider) -> Result<String, String> {
-        if !p.offline {
-            if let Some(m) = preferred_model() {
-                return Ok(m);
-            }
+        if let Some(m) = self.picker_override(p, preferred_model()) {
+            return Ok(m);
         }
         if let Some(m) = &p.model {
             return Ok(m.clone());
@@ -704,6 +714,19 @@ mod tests {
         assert!(!err.error.contains("Vessel Status"));
         // generate() must also fail rather than invent text
         assert!(m.generate("send a text", None, false).await.is_err());
+    }
+
+    #[test]
+    fn picker_choice_applies_only_to_the_provider_that_listed_it() {
+        let mut cfg = dead_config();
+        cfg.providers.insert(0, Provider { name: "local".into(), base_url: "http://127.0.0.1:3/v1".into(), model: None, api_key: None, offline: true, headers: None });
+        let m = LemonadeModule::new(cfg);
+        let pick = Some("picked-id".to_string());
+        let (local, first_remote, second_remote) = (&m.config.providers[0], &m.config.providers[1], &m.config.providers[2]);
+        assert_eq!(m.picker_override(first_remote, pick.clone()), pick);
+        assert_eq!(m.picker_override(second_remote, pick.clone()), None);
+        assert_eq!(m.picker_override(local, pick.clone()), None);
+        assert_eq!(m.picker_override(first_remote, None), None);
     }
 
     #[tokio::test]
