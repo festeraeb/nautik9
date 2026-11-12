@@ -5,6 +5,9 @@
  *
  *   NexusPanel.mount(rootElement, transport, {deviceName?, pollMs?})
  *   transport = { status(), offer(text), discard(), join(deviceName), leave(force) }  -> Promise<object>
+ *   optional transport.admin = { state(), accept(requestId), reject(requestId), revoke(key, name), unban(key) }
+ *     state() answers {configured:false} on a device that has no admin file, else the admission gate's
+ *     state (pending, members, banned). The admin file (url + token) is private to the device, never in a repo.
  */
 (function (global) {
   'use strict';
@@ -54,6 +57,7 @@
 .nx table { width: 100%; border-collapse: collapse; font-size: 0.8rem; margin-top: 6px; }
 .nx th, .nx td { text-align: left; padding: 3px 4px; border-bottom: 1px solid rgba(128,128,128,0.25); }
 .nx-msg { min-height: 1.2em; font-size: 0.8rem; }
+.nx-admin { margin-top: 14px; padding-top: 8px; border-top: 1px solid rgba(128,128,128,0.35); }
 `;
 
   function mount(root, t, opts) {
@@ -62,7 +66,7 @@
     root.innerHTML = '';
     const box = el('div', { class: 'nx' });
     root.appendChild(box);
-    let last = null, busy = false, leaveFailed = false, timer = null, msg = '';
+    let last = null, busy = false, leaveFailed = false, timer = null, msg = '', adm = null, admMsg = '';
 
     async function call(fn) {
       if (busy) return;
@@ -75,8 +79,65 @@
       await refresh();
     }
 
+    async function admCall(fn) {
+      if (busy) return;
+      busy = true; admMsg = ''; draw();
+      try { const r = await fn(); if (r && (r.ok === false || r.error)) admMsg = r.error || 'Failed'; } catch (e) { admMsg = String(e && e.message || e); }
+      busy = false;
+      await refreshAdmin();
+      draw();
+    }
+
+    async function refreshAdmin() {
+      if (!t.admin) return;
+      try { adm = await t.admin.state(); } catch (e) { adm = { configured: true, error: String(e && e.message || e) }; }
+    }
+
+    function drawAdmin() {
+      if (!t.admin || !adm) return;
+      const sec = el('div', { class: 'nx-admin' });
+      sec.appendChild(el('div', { class: 'nx-row' }, [el('b', { text: 'Admission' })]));
+      if (adm.configured === false) {
+        sec.appendChild(el('div', { class: 'nx-dim', text: 'Not set up on this device (the admin file nexus-admin.json is missing).' }));
+        box.appendChild(sec); return;
+      }
+      if (adm.error || adm.ok === false) {
+        sec.appendChild(el('div', { class: 'nx-msg nx-bad', text: 'Admission service: ' + (adm.error || 'no answer') }));
+        box.appendChild(sec); return;
+      }
+      const pend = adm.pending || [];
+      sec.appendChild(el('div', { class: 'nx-row nx-dim', text: pend.length ? 'Waiting for a decision' : 'Nothing waiting' }));
+      pend.forEach(r => sec.appendChild(el('div', { class: 'nx-row' }, [
+        el('span', { text: r.label + ' (' + r.fingerprint + ') from ' + r.remote }),
+        el('button', { class: 'btn-primary', text: 'Accept', onclick: () => admCall(() => t.admin.accept(r.request_id)) }),
+        el('button', { class: 'btn-mini', text: 'Reject', onclick: () => admCall(() => t.admin.reject(r.request_id)) }),
+      ])));
+      const banned = new Set((adm.banned || []).map(b => b.key));
+      const ms = (adm.members || []);
+      if (ms.length) {
+        const tb = el('tbody');
+        ms.forEach(m => tb.appendChild(el('tr', null, [
+          el('td', { text: m.hostname || m.node_id }),
+          el('td', { class: m.online ? 'nx-ok' : 'nx-dim', text: m.online ? 'online' : 'offline' }),
+          el('td', { class: banned.has(m.key) ? 'nx-bad' : '', text: banned.has(m.key) ? 'k-lined' : m.allowed ? 'allowed' : 'not listed' }),
+          el('td', null, [banned.has(m.key) ? null : el('button', { class: 'btn-mini', text: 'Revoke and k-line', onclick: () => {
+            if (confirm('Revoke and k-line ' + (m.hostname || m.fingerprint) + '? It is removed now and cannot rejoin until you un-ban it.')) admCall(() => t.admin.revoke(m.key, m.hostname || ''));
+          } })]),
+        ])));
+        sec.appendChild(el('table', null, [el('thead', null, [el('tr', null, ['Device', 'Now', 'List', ''].map(h => el('th', { text: h })))]), tb]));
+      }
+      (adm.banned || []).forEach(b => sec.appendChild(el('div', { class: 'nx-row' }, [
+        el('span', { class: 'nx-bad', text: 'k-lined: ' + (b.label || b.fingerprint) + (b.kick && b.kick.done ? '' : ' (removal pending)') }),
+        el('button', { class: 'btn-mini', text: 'Un-ban', onclick: () => admCall(() => t.admin.unban(b.key)) }),
+      ])));
+      if (adm.members_error) sec.appendChild(el('div', { class: 'nx-dim', text: 'Member list: ' + adm.members_error }));
+      sec.appendChild(el('div', { class: 'nx-msg nx-bad', text: admMsg }));
+      box.appendChild(sec);
+    }
+
     async function refresh() {
       try { last = await t.status(); } catch (e) { last = last || null; msg = msg || ('No answer: ' + (e && e.message || e)); }
+      await refreshAdmin();
       draw();
     }
 
@@ -155,6 +216,7 @@
       }
       if (s.last_error) box.appendChild(el('div', { class: 'nx-msg nx-bad', text: s.last_error }));
       box.appendChild(el('div', { class: 'nx-msg nx-bad', id: 'nxMsg', text: msg }));
+      drawAdmin();
     }
 
     refresh();

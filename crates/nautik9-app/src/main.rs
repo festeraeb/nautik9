@@ -27,6 +27,7 @@ mod static_assets;
 mod source_gate;
 mod tls;
 mod bridges_glue;
+mod nexus_admin;
 mod nexus_api;
 mod tts;
 mod webxdc_api;
@@ -295,6 +296,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Serve { port, bind, fleet_url, print_token, sms_bridge, tls, tls_cert, tls_key, allow_from, update_dir } => {
             let tls = (tls || tls_cert.is_some() || tls_key.is_some()).then_some((tls_cert, tls_key));
             nexus_api::init(&config_dir, &cli.device);
+            nexus_admin::init(&config_dir);
             let opts = ServeOptions { port, bind, fleet_url, print_token, config_dir, lemonade_config, sms_bridge, tls, allow_from, update_dir };
             serve_mobile_web(opts, registry, cli.vault_path).await?;
             return Ok(());
@@ -430,6 +432,7 @@ fn build_router(state: AppState, token: String) -> axum::Router {
         .merge(admin_api::routes())
         .merge(tts::routes())
         .merge(nexus_api::routes())
+        .merge(nexus_admin::routes())
         .layer(axum::middleware::from_fn_with_state(
             std::sync::Arc::new(token),
             auth::require_token,

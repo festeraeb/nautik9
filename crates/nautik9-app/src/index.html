@@ -2542,6 +2542,13 @@
                 discard: () => nxJson('/api/nexus/offer', { method: 'DELETE' }),
                 join: (name) => nxPost('/api/nexus/join', name ? { device_name: name } : {}),
                 leave: (force) => nxPost('/api/nexus/leave', { force: !!force }),
+                admin: {
+                    state: () => nxJson('/api/nexus/admin/state'),
+                    accept: (id) => nxPost('/api/nexus/admin/accept', { request_id: id }),
+                    reject: (id) => nxPost('/api/nexus/admin/reject', { request_id: id }),
+                    revoke: (key, name) => nxPost('/api/nexus/admin/revoke', { key, label: name }),
+                    unban: (key) => nxPost('/api/nexus/admin/unban', { key }),
+                },
             }, {});
         }
     </script>
