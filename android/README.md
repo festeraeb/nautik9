@@ -96,6 +96,49 @@ Settings > Remote care, off by default, saved as `files/config/remote_care.json`
   a 100.64/10 source over cellular; such a peer passes the gate but still needs the token. Checking
   that the connection arrived on the Tailscale interface's own address would close that.
 
+## Button debugging on demand (Wireless debugging off by default)
+
+Samsung turns Wireless debugging off at every reboot, and leaving it on costs battery. So updates
+go through remote care (no adb needed, see above; `android/push-update.sh` does the push), and
+Wireless debugging is turned on by the app only when it is needed, then off again.
+
+It is turned on in exactly two cases:
+
+1. **The fleet asks.** `POST /api/admin/debug/session` (token, over Tailscale with remote care on).
+   The phone shows "Turn on Wireless debugging for a button test?" as a notification with
+   **Yes / Not now** (and as a dialog when the app is open). Only Yes turns it on. Read the answer
+   at `GET /api/admin/debug` (`device.prompt.answer`: waiting, yes, not_now, expired,
+   no_permission, already_on). Asking again while it is on restarts the idle timer.
+2. **The app's own button self-test fails.** It then turns Wireless debugging on by itself and
+   posts one line to Buzz #ops (through the fleet address in `config/fleet_url`; same host, port
+   5561) with the reason, the adb TLS port when the app could read it, the phone's addresses and
+   when it switches off again.
+
+It switches itself off after an idle time (default 30 minutes; `POST /api/admin/debug/config`
+`{"idle_minutes": 30, "prompt_minutes": 10}`, kept in `config/debug.json`). The app cannot see an
+adb session, so "idle" means no new request from the fleet. Wireless debugging that the owner
+turned on by hand is never turned off by the app, and `POST /api/admin/debug/off` ignores it.
+
+**One-time grant over adb** (survives reboots and updates; without it the app says so plainly in
+the prompt result and in the API answer, and turns nothing on):
+
+```bash
+adb shell pm grant com.festeraeb.nautik9 android.permission.WRITE_SECURE_SETTINGS
+```
+
+**The port** changes every time. The app tries `getprop service.adb.tls.port`, then looks for its
+own `_adb-tls-connect._tcp` service with NsdManager (Wireless debugging only listens while the
+phone is on Wi-Fi). If it cannot read it, the report says why and the fleet scans the phone's LAN
+address over 1024-65535.
+
+**Internal self-test** (`SelfTest.java` plus the server's own checks): haptic, torch on and off,
+battery, GPS fix or a stated reason, local server health, theme apply (saved and put back), Nexus
+SDK loaded. It runs on the first start after an update and on `POST /api/admin/selftest`; the
+result is at `GET /api/admin/selftest`. The phone vibrates once and the torch flashes for half a
+second. A failure cannot be forced through the API (that would be a way around the Yes prompt);
+debuggable builds honour an empty file `config/selftest_force_fail` once, to prove the failure path
+on a real phone.
+
 ## Build
 
 Needs `ANDROID_HOME` with `platforms;android-35`, `build-tools;35.0.0` and `ndk;27.2.12479018`,

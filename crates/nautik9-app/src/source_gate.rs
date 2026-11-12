@@ -84,7 +84,7 @@ impl Gate {
 }
 
 /// The peer of this request: real (`into_make_service_with_connect_info`) or a test's mock.
-fn peer(req: &Request) -> Option<IpAddr> {
+pub(crate) fn peer(req: &Request) -> Option<IpAddr> {
     req.extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|c| c.0.ip())

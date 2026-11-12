@@ -13,11 +13,11 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/.." && pwd)
 : "${ANDROID_HOME:?set ANDROID_HOME}"
 : "${LLAMA_SERVER:?set LLAMA_SERVER to an Android arm64 llama-server}"
-VERSION_NAME=${VERSION_NAME:-0.10.0}
+VERSION_NAME=${VERSION_NAME:-0.11.0}
 # DEBUGGABLE=1 (default for now): adb run-as and WebView DevTools over adb, for working on the
 # app live over wireless debugging. Set DEBUGGABLE=0 for a build you hand to someone else.
 DEBUGGABLE=${DEBUGGABLE:-1}
-VERSION_CODE=${VERSION_CODE:-55}
+VERSION_CODE=${VERSION_CODE:-56}
 NDK=$ANDROID_HOME/ndk/27.2.12479018
 TC=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin
 BT=$ANDROID_HOME/build-tools/35.0.0

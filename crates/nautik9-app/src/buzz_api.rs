@@ -184,7 +184,7 @@ fn describe(e: &reqwest::Error) -> String {
     if e.is_timeout() { "timed out".into() } else if e.is_connect() { "connection refused or unreachable".into() } else { "request failed".to_string() }
 }
 
-async fn buzz_req(st: &AppState, dir: &Path, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value, Response> {
+pub(crate) async fn buzz_req(st: &AppState, dir: &Path, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value, Response> {
     let (url, _) = effective_buzz_url(st, dir);
     let Some(base) = url else {
         return Err(fail(StatusCode::SERVICE_UNAVAILABLE, "not_configured", "no Buzz address: set one in Settings, or give the app a fleet address"));

@@ -64,6 +64,8 @@ pub struct Admin {
     pub max_update_bytes: u64,
     /// One download at a time.
     pub update_lock: Arc<tokio::sync::Mutex<()>>,
+    /// What the Android app reports about Wireless debugging and the self-test (debug_api.rs).
+    pub debug: Arc<Mutex<crate::debug_api::DebugState>>,
 }
 
 pub const DEFAULT_MAX_UPDATE_BYTES: u64 = 200 * 1024 * 1024;
@@ -78,6 +80,7 @@ impl Admin {
             pending: Default::default(),
             max_update_bytes: DEFAULT_MAX_UPDATE_BYTES,
             update_lock: Default::default(),
+            debug: Default::default(),
         }
     }
 
@@ -132,7 +135,7 @@ async fn version() -> Json<Value> {
 
 /// Every (interface, address) on this device, from getifaddrs(3) (bionic has it since API 24).
 #[cfg(unix)]
-fn interface_addrs() -> Vec<(String, IpAddr)> {
+pub(crate) fn interface_addrs() -> Vec<(String, IpAddr)> {
     let mut out = Vec::new();
     let mut ifap: *mut libc::ifaddrs = std::ptr::null_mut();
     // SAFETY: getifaddrs fills a list we walk read-only and free once; every pointer is checked.
@@ -165,7 +168,7 @@ fn interface_addrs() -> Vec<(String, IpAddr)> {
 }
 
 #[cfg(not(unix))]
-fn interface_addrs() -> Vec<(String, IpAddr)> {
+pub(crate) fn interface_addrs() -> Vec<(String, IpAddr)> {
     Vec::new()
 }
 

@@ -95,6 +95,18 @@ async fn blocking<F: FnOnce(Nexus) -> Response + Send + 'static>(f: F) -> Respon
     tokio::task::spawn_blocking(move || f(n)).await.unwrap_or_else(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
+/// (loaded, path or error) of the Nexus SDK, for the self-test. Not loaded when the module never started.
+pub fn sdk_state() -> (bool, String) {
+    match NEXUS.get() {
+        None => (false, "the Nexus module did not start".into()),
+        Some(n) => {
+            let s = n.status();
+            let sdk = &s["sdk"];
+            (sdk["loaded"].as_bool().unwrap_or(false), sdk["path"].as_str().or_else(|| sdk["error"].as_str()).unwrap_or("").to_string())
+        }
+    }
+}
+
 async fn status() -> Response {
     blocking(|n| Json(n.status()).into_response()).await
 }

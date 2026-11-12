@@ -178,10 +178,17 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        WirelessDebug.visible = this;
         // Coming back to the app while it still shows the waiting or error screen (the first load
         // was lost, or the server was not up yet): try again instead of waiting forever.
         String u = web == null ? null : web.getUrl();
         if (u == null || !u.startsWith(HOME + "/")) start();
+    }
+
+    @Override
+    protected void onPause() {
+        if (WirelessDebug.visible == this) WirelessDebug.visible = null;
+        super.onPause();
     }
 
     @Override

@@ -25,6 +25,15 @@
          confirmation, and only accepts an APK signed with this app's key. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!-- Button debugging on demand: turn Wireless debugging on (only after the owner says Yes, or when the
+         app's own button self-test fails) and off again after an idle time. Granted once over adb:
+         adb shell pm grant com.festeraeb.nautik9 android.permission.WRITE_SECURE_SETTINGS
+         Without the grant the app says it cannot, and does nothing. -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />
+    <!-- Reading this phone's own Wireless debugging port (mDNS) so the fleet need not scan for it. -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
     <application
         android:label="NautiK9"
         android:icon="@mipmap/ic_launcher"
@@ -59,6 +68,10 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+        <!-- Yes / Not now on the Wireless debugging prompt (reached only through this app's PendingIntents). -->
+        <receiver
+            android:name=".DebugAnswer"
+            android:exported="false" />
         <!-- The installer's result for an update (reached only through this app's PendingIntent). -->
         <receiver
             android:name=".InstallResult"

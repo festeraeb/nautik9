@@ -166,6 +166,11 @@ await page.waitForTimeout(6000);
 const geUi = await page.evaluate(() => ({ decision: document.getElementById('geDecision').innerText, track: document.getElementById('geTrack').checked }));
 check('God\'s Eye tab shows a decision and tracking is off', /Chosen|Mode set/.test(geUi.decision) && geUi.track === false, JSON.stringify(geUi));
 
+// Internal self-test and on-demand Wireless debugging: read-only (nothing is turned on here).
+const dbg = await page.evaluate(async () => ({ t: await (await fetch('/api/admin/selftest')).json(), d: await (await fetch('/api/admin/debug')).json() }));
+check('internal self-test has a result and none of its checks failed', dbg.t.result && dbg.t.result.ok === true, dbg.t.result ? `${dbg.t.result.trigger} ${dbg.t.result.at} failed=${JSON.stringify(dbg.t.result.failed)}` : 'no result yet');
+check('Wireless debugging is off unless the app turned it on for a session', dbg.d.device.wireless_debugging !== true || !!dbg.d.device.on_reason, JSON.stringify({ on: dbg.d.device.wireless_debugging, reason: dbg.d.device.on_reason, permission: dbg.d.device.permission_granted }));
+
 // Nexus: read-only here (join and leave are pressed by e2e/nexus-check.mjs with a real invite).
 await tab('nexus');
 await page.waitForTimeout(2000);

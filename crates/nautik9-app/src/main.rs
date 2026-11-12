@@ -14,6 +14,7 @@ use nautik9_lemonade::{LemonadeConfig, LemonadeModule};
 use nautik9_wayfinder::{WayfinderModule, WayfinderVault};
 
 mod admin_api;
+mod debug_api;
 mod agent_api;
 mod apps_api;
 mod buzz_api;
@@ -430,6 +431,7 @@ fn build_router(state: AppState, token: String) -> axum::Router {
         .merge(buzz_api::routes())
         .merge(godseye_api::routes())
         .merge(admin_api::routes())
+        .merge(debug_api::routes())
         .merge(tts::routes())
         .merge(nexus_api::routes())
         .merge(nexus_admin::routes())

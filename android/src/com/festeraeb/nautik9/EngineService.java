@@ -31,7 +31,7 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class EngineService extends Service {
     private static final String CHANNEL = "engines";
-    private static final long POLL_MS = 20_000;
+    private static final long POLL_MS = 5_000;
     /** Action ids already handed to the installer by this process (not started twice). */
     private static final Set<String> handed = ConcurrentHashMap.newKeySet();
     private Thread poller;
@@ -48,6 +48,13 @@ public class EngineService extends Service {
         new Thread(() -> {
             try {
                 Engines.get(this).startAll();
+                // First start of a new build: run the internal button self-test once (it turns Wireless debugging on if it fails).
+                try {
+                    Thread.sleep(6000);
+                } catch (InterruptedException e) {
+                    return;
+                }
+                SelfTest.afterUpdateIfNeeded(this);
             } catch (Exception ignored) {
                 // MainActivity shows the error when it is open; the poll below retries nothing by itself.
             }
@@ -86,6 +93,7 @@ public class EngineService extends Service {
                     shownRemoteCare = rc;
                     getSystemService(NotificationManager.class).notify(1, notification(rc));
                 }
+                WirelessDebug.tick(this);
                 pollOnce();
             } catch (Exception ignored) {
                 // Server not up yet, or a malformed answer: try again next round.
@@ -101,7 +109,21 @@ public class EngineService extends Service {
         for (int k = 0; k < actions.length(); k++) {
             org.json.JSONObject a = actions.getJSONObject(k);
             String id = a.optString("id");
-            if (id.isEmpty() || !"install_apk".equals(a.optString("kind")) || !handed.add(id)) continue;
+            String kind = a.optString("kind");
+            if (id.isEmpty() || !handed.add(id)) continue;
+            if (kind.startsWith("wireless_debug_") || "self_test".equals(kind)) {
+                // Prompt, switch-off and self-test requests from the fleet (debug_api.rs); each runs on its own thread.
+                new Thread(() -> {
+                    try {
+                        if ("self_test".equals(kind)) SelfTest.run(this, "request", id);
+                        else WirelessDebug.handleAction(this, a);
+                    } catch (Exception e) {
+                        reportDone(this, id, false, kind + " failed: " + e);
+                    }
+                }, "device-action").start();
+                continue;
+            }
+            if (!"install_apk".equals(kind)) continue;
             try {
                 install(id, a.getString("path"), a.getString("sha256"));
             } catch (Exception e) {
