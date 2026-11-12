@@ -18,7 +18,7 @@
 //! Not covered by a live test (no Discord account in the test suite): the protocol is tested
 //! against a local mock gateway and a mock REST server.
 
-use crate::{Incoming, Policy, Transport};
+use crate::{Incoming, Policy, Sender, Transport};
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -83,21 +83,16 @@ impl Drop for DiscordTransport {
     }
 }
 
-impl DiscordTransport {
-    /// Connect in the background (reconnects with back-off until dropped).
-    pub fn start(cfg: &DiscordConfig) -> Self {
-        let (tx, rx) = mpsc::channel(64);
-        let task = tokio::spawn(gateway_loop(cfg.token.clone(), cfg.gateway_url.clone(), tx));
-        DiscordTransport { rx, http: reqwest::Client::builder().timeout(Duration::from_secs(20)).build().expect("http client"), token: cfg.token.clone(), api_base: cfg.api_base.clone(), task }
-    }
+/// The send half of a Discord transport (cheap to clone, usable while the transport runs).
+#[derive(Clone)]
+pub struct DiscordSender {
+    http: reqwest::Client,
+    token: String,
+    api_base: String,
 }
 
 #[async_trait]
-impl Transport for DiscordTransport {
-    async fn next(&mut self) -> Option<Incoming> {
-        self.rx.recv().await
-    }
-
+impl crate::Sender for DiscordSender {
     async fn send(&self, channel: &str, text: &str) -> Result<(), String> {
         if !channel.chars().all(|c| c.is_ascii_digit()) || channel.is_empty() {
             return Err("bad channel id".into());
@@ -123,6 +118,39 @@ impl Transport for DiscordTransport {
             return Ok(());
         }
         Err("discord send: rate limited".into())
+    }
+
+    fn max_len(&self) -> usize {
+        2000
+    }
+}
+
+impl DiscordTransport {
+    fn sender_handle(&self) -> DiscordSender {
+        DiscordSender { http: self.http.clone(), token: self.token.clone(), api_base: self.api_base.clone() }
+    }
+
+    /// A send handle for the approve action of the inbox.
+    pub fn sender(&self) -> std::sync::Arc<dyn crate::Sender> {
+        std::sync::Arc::new(self.sender_handle())
+    }
+
+    /// Connect in the background (reconnects with back-off until dropped).
+    pub fn start(cfg: &DiscordConfig) -> Self {
+        let (tx, rx) = mpsc::channel(64);
+        let task = tokio::spawn(gateway_loop(cfg.token.clone(), cfg.gateway_url.clone(), tx));
+        DiscordTransport { rx, http: reqwest::Client::builder().timeout(Duration::from_secs(20)).build().expect("http client"), token: cfg.token.clone(), api_base: cfg.api_base.clone(), task }
+    }
+}
+
+#[async_trait]
+impl Transport for DiscordTransport {
+    async fn next(&mut self) -> Option<Incoming> {
+        self.rx.recv().await
+    }
+
+    async fn send(&self, channel: &str, text: &str) -> Result<(), String> {
+        self.sender_handle().send(channel, text).await
     }
 
     fn max_len(&self) -> usize {

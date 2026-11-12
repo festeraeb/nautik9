@@ -2007,7 +2007,9 @@
                         ${msg.status === 'NoModel' ? `<div class="sms-draft-box"><div class="sms-draft-text" style="color:var(--rose)">No draft: ${esc(msg.draft_error || 'no model endpoint answered')}</div></div>` : ''}
                         <div class="sms-actions">
                             ${msg.status === 'Drafted' ? `
-                                ${String(msg.id).startsWith('sms-') ? `<button class="btn-mini" style="color:var(--emerald);border-color:var(--emerald);" onclick="smsAction('${esc(msg.id)}', 'approve')">📲 Approve & open in phone composer</button>` : '<span style="font-size:0.75rem;color:var(--text-sub)">Messenger draft: copy it and answer there</span>'}
+                                ${msg.transport
+                                    ? `<button class="btn-mini" style="color:var(--emerald);border-color:var(--emerald);" onclick="smsAction('${esc(msg.id)}', 'approve')">📨 Approve & send via ${esc(msg.transport)}</button>`
+                                    : `<button class="btn-mini" style="color:var(--emerald);border-color:var(--emerald);" onclick="smsAction('${esc(msg.id)}', 'approve')">📲 Approve & open in phone composer</button>`}
                                 <button class="btn-mini" onclick="rerollSmsDraft('${esc(msg.id)}')">🔄 Reroll Draft</button>
                             ` : ''}
                             ${(msg.status === 'Pending' || msg.status === 'NoModel') ? `

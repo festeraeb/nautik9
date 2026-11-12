@@ -369,6 +369,7 @@ mod tests {
             hardware: std::sync::Arc::new(hw),
             vault_path: dir.join("vault.db"),
             sms_messages: Default::default(),
+            senders: Default::default(),
             work_config: Default::default(),
             lemonade: lemonade.clone(),
             fleet_url: "http://127.0.0.1:1".into(),

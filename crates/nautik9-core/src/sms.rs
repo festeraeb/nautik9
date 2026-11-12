@@ -26,6 +26,13 @@ pub struct SmsMessage {
     pub status: SmsStatus,
     pub reply_model: Option<String>,
     pub latency_ms: Option<u64>,
+    /// Set for a message that came from a messenger bridge ("discord", "vector"): the reply goes back
+    /// through that bridge to `channel`. None = a text message (SMS).
+    #[serde(default)]
+    pub transport: Option<String>,
+    /// Where on `transport` the reply goes (a Discord channel id, a Nostr pubkey).
+    #[serde(default)]
+    pub channel: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

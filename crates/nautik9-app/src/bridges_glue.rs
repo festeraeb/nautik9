@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 use nautik9_agent::Agent;
-use nautik9_bridges::{discord, vector, Bridge, Brain, Draft, Inbox, InboxItem};
+use nautik9_bridges::{discord, vector, Bridge, Brain, Draft, Inbox, InboxItem, SenderRegistry};
 use nautik9_core::sms::{SmsMessage, SmsStatus, WorkModeConfig};
 use nautik9_lemonade::{LemonadeModule, SmsDraftRequest};
 use std::path::Path;
@@ -66,13 +66,15 @@ impl Inbox for SmsInbox {
             status,
             reply_model,
             latency_ms: None,
+            transport: Some(item.platform.clone()),
+            channel: Some(item.channel.clone()),
         };
         self.0.write().await.insert(0, msg);
     }
 }
 
 /// Start the enabled bridges. Returns one status line per bridge that is enabled or broken.
-pub fn spawn(config_dir: &Path, agent: Arc<Agent>, lemonade: Arc<LemonadeModule>, work: Arc<RwLock<WorkModeConfig>>, sms: Arc<RwLock<Vec<SmsMessage>>>) -> Vec<String> {
+pub fn spawn(config_dir: &Path, agent: Arc<Agent>, lemonade: Arc<LemonadeModule>, work: Arc<RwLock<WorkModeConfig>>, sms: Arc<RwLock<Vec<SmsMessage>>>, senders: Arc<SenderRegistry>) -> Vec<String> {
     let conf: serde_json::Value = match std::fs::read_to_string(config_dir.join("agent.json")) {
         Ok(t) => match serde_json::from_str(&t) {
             Ok(v) => v,
@@ -88,6 +90,7 @@ pub fn spawn(config_dir: &Path, agent: Arc<Agent>, lemonade: Arc<LemonadeModule>
         Ok(Some(cfg)) => {
             let bridge = Bridge::new(cfg.policy.clone(), brain.clone(), inbox.clone());
             let t = discord::DiscordTransport::start(&cfg);
+            senders.register("discord", t.sender());
             tokio::spawn(async move { bridge.run(t).await });
             notes.push(format!("discord: running ({} owner id(s); replies to others are {})", cfg.policy.owner_ids.len(), if cfg.policy.auto_reply_others { "sent automatically" } else { "drafts in the inbox only" }));
         }
@@ -98,6 +101,7 @@ pub fn spawn(config_dir: &Path, agent: Arc<Agent>, lemonade: Arc<LemonadeModule>
         Ok(Some(cfg)) => {
             let bridge = Bridge::new(cfg.policy.clone(), brain, inbox);
             let t = vector::VectorTransport::start(&cfg);
+            senders.register("vector", t.sender());
             tokio::spawn(async move { bridge.run(t).await });
             notes.push(format!("vector: running as {} on {} relay(s)", cfg.npub(), cfg.relays.len()));
         }

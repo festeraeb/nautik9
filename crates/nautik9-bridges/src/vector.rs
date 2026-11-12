@@ -29,7 +29,7 @@
 //! Only messages sent after the bridge started (minus one minute) are answered, so a restart
 //! never replays old DMs.
 
-use crate::{Incoming, Policy, Transport};
+use crate::{Incoming, Policy, Sender, Transport};
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use nostr::prelude::*;
@@ -128,7 +128,36 @@ impl Drop for VectorTransport {
     }
 }
 
+/// The send half of a Vector transport (usable while the transport runs).
+#[derive(Clone)]
+pub struct VectorSender {
+    keys: Keys,
+    outbound: broadcast::Sender<Event>,
+}
+
+#[async_trait]
+impl crate::Sender for VectorSender {
+    async fn send(&self, channel: &str, text: &str) -> Result<(), String> {
+        let to = PublicKey::from_hex(channel).map_err(|e| format!("bad recipient: {e}"))?;
+        let wrap = EventBuilder::private_msg(&self.keys, to, text, []).await.map_err(|e| format!("encrypt: {e}"))?;
+        self.outbound.send(wrap).map(|_| ()).map_err(|_| "no relay connection to send through".to_string())
+    }
+
+    fn max_len(&self) -> usize {
+        8000
+    }
+}
+
 impl VectorTransport {
+    fn sender_handle(&self) -> VectorSender {
+        VectorSender { keys: self.keys.clone(), outbound: self.outbound.clone() }
+    }
+
+    /// A send handle for the approve action of the inbox.
+    pub fn sender(&self) -> std::sync::Arc<dyn crate::Sender> {
+        std::sync::Arc::new(self.sender_handle())
+    }
+
     /// Connect to every relay in the background (each reconnects with back-off).
     pub fn start(cfg: &VectorConfig) -> Self {
         let (itx, irx) = mpsc::channel(256);
@@ -213,9 +242,7 @@ impl Transport for VectorTransport {
     }
 
     async fn send(&self, channel: &str, text: &str) -> Result<(), String> {
-        let to = PublicKey::from_hex(channel).map_err(|e| format!("bad recipient: {e}"))?;
-        let wrap = EventBuilder::private_msg(&self.keys, to, text, []).await.map_err(|e| format!("encrypt: {e}"))?;
-        self.outbound.send(wrap).map(|_| ()).map_err(|_| "no relay connection to send through".to_string())
+        self.sender_handle().send(channel, text).await
     }
 
     fn max_len(&self) -> usize {

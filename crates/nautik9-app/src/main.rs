@@ -297,6 +297,8 @@ struct AppState {
     hardware: std::sync::Arc<nautik9_core::hardware::HardwareProfile>,
     vault_path: PathBuf,
     sms_messages: std::sync::Arc<tokio::sync::RwLock<Vec<SmsMessage>>>,
+    /// Send paths of the running messenger bridges (approving a bridge draft sends through them).
+    senders: std::sync::Arc<nautik9_bridges::SenderRegistry>,
     work_config: std::sync::Arc<tokio::sync::RwLock<WorkModeConfig>>,
     lemonade: std::sync::Arc<LemonadeModule>,
     fleet_url: String,
@@ -517,6 +519,7 @@ async fn serve_mobile_web(
         hardware,
         vault_path,
         sms_messages: std::sync::Arc::new(tokio::sync::RwLock::new(initial_sms)),
+        senders: Default::default(),
         work_config: std::sync::Arc::new(tokio::sync::RwLock::new(work_config)),
         scheduler: match &agent {
             Ok(a) => match agent_api::heartbeat_minutes(&opts.config_dir) {
@@ -547,7 +550,7 @@ async fn serve_mobile_web(
         println!("Agent: flows running (schedule and note_changed triggers checked every 30 s; Jade/Flows/<name>.json, only approved flows fire)");
     }
     for n in match &state.agent {
-        Ok(a) => bridges_glue::spawn(&opts.config_dir, a.clone(), state.lemonade.clone(), state.work_config.clone(), state.sms_messages.clone()),
+        Ok(a) => bridges_glue::spawn(&opts.config_dir, a.clone(), state.lemonade.clone(), state.work_config.clone(), state.sms_messages.clone(), state.senders.clone()),
         Err(_) => vec![],
     } {
         println!("Bridges: {n}");
@@ -829,6 +832,8 @@ async fn handle_sms_incoming(
         status: SmsStatus::Pending,
         reply_model: None,
         latency_ms: None,
+        transport: None,
+        channel: None,
     };
 
     if work_cfg.enabled {
@@ -859,11 +864,6 @@ async fn handle_sms_incoming(
     }))
 }
 
-/// Texts read from the phone or posted to /api/sms/incoming have ids "sms-..."; messenger bridge entries do not.
-fn is_sms_id(id: &str) -> bool {
-    id.starts_with("sms-")
-}
-
 async fn handle_sms_action(
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::Json(payload): axum::Json<serde_json::Value>,
@@ -884,10 +884,20 @@ async fn handle_sms_action(
                 msg.draft_reply = Some(ed);
             }
             match action {
-                // A messenger bridge entry (id "discord-...", "vector-...") is not a text message: its sender
-                // is "discord:<id> (name)", and the SMS composer would get just the digits of that id.
-                "approve" if !is_sms_id(&msg.id) => {
-                    dispatch_result = Some("Error: this message came from a messenger, not SMS. The phone's SMS composer cannot reply to it; copy the draft and answer it there.".to_string());
+                // A messenger bridge entry: the reply goes back through THAT bridge to the channel it came from,
+                // never into the SMS composer. A bridge with no send path is an error naming it.
+                "approve" if msg.transport.is_some() => {
+                    let (platform, channel) = (msg.transport.clone().unwrap_or_default(), msg.channel.clone().unwrap_or_default());
+                    match msg.draft_reply.clone().filter(|d| !d.trim().is_empty()) {
+                        None => dispatch_result = Some("Error: there is no draft to send".to_string()),
+                        Some(text) => match state.senders.send(&platform, &channel, &text).await {
+                            Ok(_) => {
+                                msg.status = SmsStatus::Approved;
+                                dispatch_result = Some(format!("Sent to {platform}."));
+                            }
+                            Err(e) => dispatch_result = Some(format!("Error: {e}")),
+                        },
+                    }
                 }
                 "approve" => {
                     msg.status = SmsStatus::Approved;
@@ -970,6 +980,8 @@ async fn handle_sms_ingest(
             status: SmsStatus::Pending,
             reply_model: None,
             latency_ms: None,
+            transport: None,
+            channel: None,
         };
         if work_cfg.enabled {
             apply_draft(&mut msg, &state.lemonade, &work_cfg, &state.vault_path, state.hardware.recommended_embedding_dim).await;
@@ -1219,16 +1231,17 @@ mod tests {
     }
 
     fn app_with_bridge(dir: &std::path::Path, sms_bridge: SmsBridge) -> axum::Router {
-        app_seeded(dir, sms_bridge, Vec::new())
+        app_seeded(dir, sms_bridge, Vec::new(), Default::default())
     }
 
-    fn app_seeded(dir: &std::path::Path, sms_bridge: SmsBridge, seed: Vec<SmsMessage>) -> axum::Router {
+    fn app_seeded(dir: &std::path::Path, sms_bridge: SmsBridge, seed: Vec<SmsMessage>, senders: std::sync::Arc<nautik9_bridges::SenderRegistry>) -> axum::Router {
         let hw = HardwareProfile::detect_or_scaffold(Some("s25ultra"));
         let state = AppState {
             registry: std::sync::Arc::new(tokio::sync::Mutex::new(ModuleRegistry::new(hw.clone()))),
             hardware: std::sync::Arc::new(hw),
             vault_path: dir.join("vault.db"),
             sms_messages: std::sync::Arc::new(tokio::sync::RwLock::new(seed)),
+            senders,
             work_config: Default::default(),
             lemonade: std::sync::Arc::new(dead_lemonade()),
             fleet_url: "http://127.0.0.1:1".into(),
@@ -1656,18 +1669,63 @@ mod tests {
         assert_eq!(v["message"]["status"], "NoModel");
     }
 
+    /// A send path that records what it was asked to send; no network.
+    #[derive(Default)]
+    struct FakeSender(std::sync::Mutex<Vec<(String, String)>>);
+
+    #[async_trait::async_trait]
+    impl nautik9_bridges::Sender for FakeSender {
+        async fn send(&self, channel: &str, text: &str) -> Result<(), String> {
+            self.0.lock().unwrap().push((channel.to_string(), text.to_string()));
+            Ok(())
+        }
+        fn max_len(&self) -> usize {
+            2000
+        }
+    }
+
+    fn seeded_msgs() -> Vec<SmsMessage> {
+        let m = |id: &str, sender: &str, transport: Option<&str>, channel: Option<&str>| SmsMessage { id: id.into(), sender: sender.into(), body: "hi".into(), timestamp: "10:00 AM".into(), draft_reply: Some("hello back".into()), draft_error: None, status: SmsStatus::Drafted, reply_model: None, latency_ms: None, transport: transport.map(Into::into), channel: channel.map(Into::into) };
+        vec![
+            m("discord-ab12cd34", "discord:123456 (sam)", Some("discord"), Some("987654")),
+            m("sms-ab12cd34", "+15550002222", None, None),
+            m("signal-00ff00ff", "signal:9 (kim)", Some("signal"), Some("chan")),
+            m("vector-11223344", "vector:abc (lee)", Some("vector"), Some("abc")),
+        ]
+    }
+
     #[tokio::test]
-    async fn a_messenger_draft_cannot_be_approved_into_the_sms_composer() {
+    async fn approving_a_discord_draft_sends_it_through_discord_to_its_channel() {
         let d = tempfile::tempdir().unwrap();
-        let m = |id: &str, sender: &str| SmsMessage { id: id.into(), sender: sender.into(), body: "hi".into(), timestamp: "10:00 AM".into(), draft_reply: Some("hello back".into()), draft_error: None, status: SmsStatus::Drafted, reply_model: None, latency_ms: None };
-        let a = app_seeded(d.path(), SmsBridge::App, vec![m("discord-ab12cd34", "discord:123456 (sam)"), m("sms-ab12cd34", "+15550002222")]);
-        let (_, v) = call(&a, "POST", "/api/sms/action", Some(TOKEN), Some(serde_json::json!({"id":"discord-ab12cd34","action":"approve"}))).await;
-        assert!(v["composer"].is_null(), "no SMS composer for a messenger message: {v}");
-        assert_eq!(v["message"]["status"], "Drafted", "{v}");
-        assert!(v["dispatch_result"].as_str().unwrap().contains("not SMS"), "{v}");
-        // a real text still gets its composer
+        let fake = std::sync::Arc::new(FakeSender::default());
+        let reg: std::sync::Arc<nautik9_bridges::SenderRegistry> = Default::default();
+        reg.register("discord", fake.clone());
+        let a = app_seeded(d.path(), SmsBridge::App, seeded_msgs(), reg);
+        let (_, v) = call(&a, "POST", "/api/sms/action", Some(TOKEN), Some(serde_json::json!({"id":"discord-ab12cd34","action":"approve","edited_draft":"edited reply"}))).await;
+        assert!(v["composer"].is_null(), "never the SMS composer: {v}");
+        assert_eq!(v["message"]["status"], "Approved", "{v}");
+        assert_eq!(*fake.0.lock().unwrap(), vec![("987654".to_string(), "edited reply".to_string())]);
+        // a real text still gets its composer, and sends nothing through the bridge
         let (_, v) = call(&a, "POST", "/api/sms/action", Some(TOKEN), Some(serde_json::json!({"id":"sms-ab12cd34","action":"approve"}))).await;
         assert_eq!(v["composer"]["to"], "+15550002222");
+        assert_eq!(fake.0.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_or_unstarted_transport_is_refused_by_name_and_never_falls_back_to_sms() {
+        let d = tempfile::tempdir().unwrap();
+        let fake = std::sync::Arc::new(FakeSender::default());
+        let reg: std::sync::Arc<nautik9_bridges::SenderRegistry> = Default::default();
+        reg.register("discord", fake.clone());
+        let a = app_seeded(d.path(), SmsBridge::App, seeded_msgs(), reg);
+        for (id, name) in [("signal-00ff00ff", "signal"), ("vector-11223344", "vector")] {
+            let (_, v) = call(&a, "POST", "/api/sms/action", Some(TOKEN), Some(serde_json::json!({"id":id,"action":"approve"}))).await;
+            assert!(v["composer"].is_null(), "{v}");
+            assert_eq!(v["message"]["status"], "Drafted", "{v}");
+            let r = v["dispatch_result"].as_str().unwrap();
+            assert!(r.starts_with("Error:") && r.contains(name), "{r}");
+        }
+        assert!(fake.0.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

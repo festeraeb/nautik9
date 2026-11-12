@@ -139,6 +139,41 @@ pub trait Transport: Send + Sync {
     fn max_len(&self) -> usize;
 }
 
+/// The send half of a transport, shareable after the transport itself has moved into its run loop.
+#[async_trait]
+pub trait Sender: Send + Sync {
+    async fn send(&self, channel: &str, text: &str) -> Result<(), String>;
+    fn max_len(&self) -> usize;
+}
+
+/// Send paths by platform name ("discord", "vector"), filled by whichever bridges started.
+/// Approving a bridge draft sends through here, to the channel the message came from.
+#[derive(Default)]
+pub struct SenderRegistry(Mutex<HashMap<String, Arc<dyn Sender>>>);
+
+impl SenderRegistry {
+    pub fn register(&self, platform: &str, s: Arc<dyn Sender>) {
+        self.0.lock().unwrap().insert(platform.to_string(), s);
+    }
+
+    /// Send `text` (chunked to the platform's limit) to `channel` on `platform`. A platform with no
+    /// registered send path is an error naming it; there is no fallback to another channel.
+    pub async fn send(&self, platform: &str, channel: &str, text: &str) -> Result<usize, String> {
+        let s = self.0.lock().unwrap().get(platform).cloned().ok_or_else(|| format!("there is no way to send to {platform} from here (that bridge is not running or not supported)"))?;
+        if channel.trim().is_empty() {
+            return Err(format!("this {platform} message has no channel to reply to"));
+        }
+        let pieces = chunk(text, s.max_len());
+        if pieces.is_empty() {
+            return Err("the draft is empty".into());
+        }
+        for piece in &pieces {
+            s.send(channel, piece).await.map_err(|e| format!("{platform}: {e}"))?;
+        }
+        Ok(pieces.len())
+    }
+}
+
 /// What a draft for someone else came back as.
 #[derive(Debug, Clone)]
 pub struct Draft {
