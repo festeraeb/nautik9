@@ -82,6 +82,18 @@ fn parse_str_arg(s: &str) -> Option<String> {
     None
 }
 
+/// The first argument of a call: a quoted string may contain commas (`"Name, please?"`), so the
+/// argument ends at its closing quote, not at the first comma.
+fn first_arg(a: &str) -> &str {
+    let t = a.trim_start();
+    if let Some(q) = t.chars().next().filter(|c| *c == '"' || *c == '\'') {
+        if let Some(end) = t[1..].find(q) {
+            return &t[..end + 2];
+        }
+    }
+    a.split(',').next().unwrap_or(a)
+}
+
 /// Fill a template. `values` answers `tp.system.prompt` questions.
 pub fn render(template: &str, title: &str, values: &HashMap<String, String>, now: &DateTime<Local>) -> Result<Rendered, String> {
     let title_only = title.trim_end_matches(".md").rsplit('/').next().unwrap_or(title).to_string();
@@ -115,7 +127,7 @@ pub fn render(template: &str, title: &str, values: &HashMap<String, String>, now
             // A marker char, resolved after {{vars}} so the offset stays exact.
             if marked { String::new() } else { marked = true; "\u{1}".to_string() }
         } else if let Some(a) = inner.strip_prefix("tp.system.prompt(").and_then(|x| x.strip_suffix(')')) {
-            let q = a.split(',').next().and_then(parse_str_arg).ok_or_else(|| format!("template: bad prompt in `{inner}`"))?;
+            let q = parse_str_arg(first_arg(a)).ok_or_else(|| format!("template: bad prompt in `{inner}`"))?;
             if !prompts.contains(&q) {
                 prompts.push(q.clone());
             }
@@ -260,6 +272,15 @@ mod tests {
     fn missing_prompt_value_is_an_error_not_a_guess() {
         let e = render("<% tp.system.prompt(\"Who?\") %>", "x", &HashMap::new(), &at()).unwrap_err();
         assert!(e.contains("\"Who?\""), "{e}");
+    }
+
+    #[test]
+    fn a_comma_inside_the_quoted_question_is_not_an_argument_separator() {
+        let mut v = HashMap::new();
+        v.insert("Name, please?".to_string(), "Sam".to_string());
+        let r = render("Hi <% tp.system.prompt(\"Name, please?\") %> / <% tp.system.prompt('Name, please?', \"dflt, x\") %>", "x", &v, &at()).unwrap();
+        assert_eq!(r.text, "Hi Sam / Sam");
+        assert_eq!(r.prompts, vec!["Name, please?".to_string()]);
     }
 
     #[test]
