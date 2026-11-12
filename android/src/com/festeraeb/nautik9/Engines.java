@@ -20,6 +20,10 @@ final class Engines {
     static final int SERVER_PORT = 8340;
     static final int LLM_PORT = 8341;
     static final String LLM_ALIAS = "on-device";
+    /** Threads for the on-device model: the big cores. More than this fights the UI and burns battery. */
+    static final int LLM_THREADS = 6;
+    /** Stop the on-device model after this long without a request; it restarts on demand. */
+    static final long LLM_IDLE_STOP_MS = 10 * 60_000L;
 
     private static Engines instance;
 
@@ -30,6 +34,8 @@ final class Engines {
     private Process server;
     private Process llm;
     private String llmModel;
+    private long llmStartedAt;
+    private Thread idleWatcher;
 
     static synchronized Engines get(Context c) {
         if (instance == null) instance = new Engines(c.getApplicationContext());
@@ -57,45 +63,185 @@ final class Engines {
         return ggufs[0];
     }
 
-    /** Start whatever is not already answering. Blocks until the server answers or times out. */
-    synchronized void startAll() throws IOException {
+    /** Bumped by stopAll(): a startAll() that is still waiting for the server gives up when it changes. */
+    private volatile int stopGeneration;
+
+    /**
+     * Start whatever is not already answering. Blocks until the server answers, times out or
+     * stopAll() is called. The lock is held only while launching, never during the wait, so a
+     * stop (the user closing the app) is never stuck behind a slow start.
+     */
+    void startAll() throws IOException {
+        int generation = stopGeneration;
+        launchServer();
+        // Up to 60 s: a first start can be slow while the phone is busy.
+        for (int i = 0; i < 300 && generation == stopGeneration && !alive(SERVER_PORT, "/api/health"); i++) {
+            sleep(200);
+        }
+        if (generation == stopGeneration) startIdleWatcher();
+    }
+
+    private synchronized void launchServer() throws IOException {
         configDir.mkdirs();
         writeDefaultProviders();
         Download.progress(ctx, modelsDir()); // finishes a download that completed while the app was away
-        startLlmIfModel();
-        if (!alive(SERVER_PORT, "/api/health")) {
-            ProcessBuilder pb = new ProcessBuilder(
-                    nativeDir + "/libnautik9.so",
-                    "--device", "s25ultra",
-                    "--vault-path", new File(files, "vault.db").getPath(),
-                    "--config-dir", configDir.getPath(),
-                    "serve", "--bind", "127.0.0.1", "--port", String.valueOf(SERVER_PORT),
-                    "--sms-bridge", "app");
-            pb.environment().put("HOME", files.getPath());
-            pb.redirectErrorStream(true);
-            pb.redirectOutput(ProcessBuilder.Redirect.appendTo(new File(files, "server.log")));
-            server = pb.start();
+        // The model is started on demand (the page asks for it when it needs an answer), not here:
+        // cold start stays short and an idle phone does not hold a 2.5 GB model.
+        if ((server != null && server.isAlive()) || alive(SERVER_PORT, "/api/health")) return;
+        java.util.List<String> cmd = new java.util.ArrayList<>(java.util.Arrays.asList(
+                nativeDir + "/libnautik9.so",
+                "--device", "s25ultra",
+                "--vault-path", new File(files, "vault.db").getPath(),
+                "--config-dir", configDir.getPath(),
+                "serve", "--bind", "127.0.0.1", "--port", String.valueOf(SERVER_PORT),
+                "--sms-bridge", "app"));
+        // config/fleet_url (one line) names the home fleet aggregator for the Fleet Deck; without
+        // it the server's default (this phone's loopback) is asked and answers "unreachable".
+        File fleetUrl = new File(configDir, "fleet_url");
+        if (fleetUrl.exists()) {
+            String u = new String(Files.readAllBytes(fleetUrl.toPath()), StandardCharsets.UTF_8).trim();
+            if (!u.isEmpty()) { cmd.add("--fleet-url"); cmd.add(u); }
         }
-        // Up to 60 s: a first start can be slow while the phone is busy.
-        for (int i = 0; i < 300 && !alive(SERVER_PORT, "/api/health"); i++) {
-            sleep(200);
+        ProcessBuilder pb = new ProcessBuilder(cmd);
+        pb.environment().put("HOME", files.getPath());
+        pb.redirectErrorStream(true);
+        pb.redirectOutput(ProcessBuilder.Redirect.appendTo(new File(files, "server.log")));
+        server = pb.start();
+    }
+
+    /** Start the on-device model in the background if a model file is present. */
+    void ensureLlm() {
+        new Thread(() -> {
+            try {
+                startLlmIfModel();
+            } catch (IOException ignored) {
+            }
+        }, "llm-start").start();
+    }
+
+    /** Stop the on-device model (ours, or an orphan from an earlier app process). */
+    synchronized void stopLlm() {
+        if (llm != null) {
+            llm.destroy();
+            llm = null;
+        }
+        for (int pid : pidsOf("libllama_server.so")) android.os.Process.killProcess(pid);
+        llmModel = null;
+    }
+
+    /** Stop everything the app started. Used when the user closes the app. */
+    synchronized void stopAll() {
+        stopGeneration++;
+        stopLlm();
+        if (server != null) {
+            server.destroy();
+            server = null;
+        }
+        for (int pid : pidsOf("libnautik9.so")) android.os.Process.killProcess(pid);
+    }
+
+    /** Our own child processes whose command line names this binary. */
+    private static java.util.List<Integer> pidsOf(String binary) {
+        java.util.List<Integer> out = new java.util.ArrayList<>();
+        File[] procs = new File("/proc").listFiles((d, n) -> n.chars().allMatch(Character::isDigit));
+        if (procs == null) return out;
+        for (File p : procs) {
+            try {
+                byte[] cmd = Files.readAllBytes(new File(p, "cmdline").toPath());
+                if (new String(cmd, StandardCharsets.UTF_8).contains(binary)) out.add(Integer.parseInt(p.getName()));
+            } catch (IOException | RuntimeException ignored) {
+                // another app's process: unreadable, skip
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Every minute: if the model has answered nothing for LLM_IDLE_STOP_MS (the server keeps
+     * the time of the last local request), stop it. It comes back in a few seconds when asked.
+     */
+    private synchronized void startIdleWatcher() {
+        if (idleWatcher != null && idleWatcher.isAlive()) return;
+        idleWatcher = new Thread(() -> {
+            while (true) {
+                sleep(60_000);
+                try {
+                    if (!llmRunning()) continue;
+                    long idleMs = System.currentTimeMillis() - llmStartedAt;
+                    Long fromServer = serverIdleSeconds();
+                    if (fromServer != null) idleMs = Math.min(idleMs, fromServer * 1000);
+                    if (idleMs > LLM_IDLE_STOP_MS && !llmBusy()) stopLlm();
+                } catch (RuntimeException ignored) {
+                }
+            }
+        }, "llm-idle");
+        idleWatcher.setDaemon(true);
+        idleWatcher.start();
+    }
+
+    /** True while llama-server has a slot processing a request (never stop it mid-answer). */
+    private static boolean llmBusy() {
+        try {
+            HttpURLConnection c = (HttpURLConnection) new URL("http://127.0.0.1:" + LLM_PORT + "/slots").openConnection();
+            c.setConnectTimeout(500);
+            c.setReadTimeout(1500);
+            if (c.getResponseCode() != 200) return false;
+            java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+            try (java.io.InputStream in = c.getInputStream()) {
+                byte[] b = new byte[4096];
+                for (int n; (n = in.read(b)) > 0; ) buf.write(b, 0, n);
+            }
+            return buf.toString("UTF-8").contains("\"is_processing\":true");
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Seconds since the server last asked the on-device model, or null if unknown / never. */
+    private Long serverIdleSeconds() {
+        try {
+            HttpURLConnection c = (HttpURLConnection) new URL("http://127.0.0.1:" + SERVER_PORT + "/api/net").openConnection();
+            c.setRequestProperty("Authorization", "Bearer " + token());
+            c.setConnectTimeout(500);
+            c.setReadTimeout(1500);
+            if (c.getResponseCode() != 200) return null;
+            java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+            try (java.io.InputStream in = c.getInputStream()) {
+                byte[] b = new byte[4096];
+                for (int n; (n = in.read(b)) > 0; ) buf.write(b, 0, n);
+            }
+            String body = new String(buf.toByteArray(), StandardCharsets.UTF_8);
+            org.json.JSONObject o = new org.json.JSONObject(body);
+            return o.isNull("local_model_idle_seconds") ? null : o.getLong("local_model_idle_seconds");
+        } catch (Exception e) {
+            return null;
         }
     }
 
     synchronized void startLlmIfModel() throws IOException {
         File model = modelFile();
         if (model == null || alive(LLM_PORT, "/health")) return;
+        // A process we already launched that is still loading its model answers no /health yet:
+        // that is liveness, not absence. Launching again would start a second llama-server.
+        if (llm != null && llm.isAlive()) return;
         if (Download.inProgress(ctx)) return;
         ProcessBuilder pb = new ProcessBuilder(
                 nativeDir + "/libllama_server.so",
                 "-m", model.getPath(),
                 "-a", LLM_ALIAS,
                 "--host", "127.0.0.1", "--port", String.valueOf(LLM_PORT),
-                "-c", "8192", "-ctk", "q8_0", "-ctv", "q8_0", "-t", "6", "--jinja");
+                "-c", "8192", "-ctk", "q8_0", "-ctv", "q8_0",
+                "-t", String.valueOf(LLM_THREADS), "-tb", String.valueOf(LLM_THREADS),
+                // Keep the system prompt and earlier turns in the KV cache between requests.
+                "--cache-reuse", "256",
+                // No model warm-up pass: the first real request pays it instead, so wake is quick.
+                "--no-warmup",
+                "--jinja");
         pb.redirectErrorStream(true);
         pb.redirectOutput(ProcessBuilder.Redirect.appendTo(new File(files, "llm.log")));
         llm = pb.start();
         llmModel = model.getName();
+        llmStartedAt = System.currentTimeMillis();
     }
 
     boolean llmRunning() {

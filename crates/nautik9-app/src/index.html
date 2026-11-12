@@ -912,12 +912,160 @@
         .n9-app-row { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid rgba(148,163,184,.2); font-size: 0.85rem; }
         .n9-app-row span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         #n9AppFrame { width: 100%; height: 360px; border: 1px solid rgba(148,163,184,.3); border-radius: 8px; margin-top: 8px; background: #fff; display: none; }
+
+        html[data-theme="sail"] {
+            --bg: #041525;
+            --surface: #0c2c40;
+            --surface-card: #12384f;
+            --surface-elevated: #184861;
+            --border: #2a6d86;
+            --border-highlight: #e2b15a;
+            --accent: #3ec6e0;
+            --accent-soft: rgba(62, 198, 224, 0.16);
+            --marine: #1a6f8a;
+            --brass: #e2b15a;
+            --emerald: #3dbe8c;
+            --text-main: #f6f1e4;
+            --text-sub: #c5d5df;
+            --text-muted: #8eabbb;
+        }
+        html[data-theme="dead"] {
+            --bg: #16021c;
+            --surface: #2c0836;
+            --surface-card: #3d0d32;
+            --surface-elevated: #54144a;
+            --border: #ff4fa3;
+            --border-highlight: #ffe14a;
+            --accent: #ff4fa3;
+            --accent-soft: rgba(255, 79, 163, 0.18);
+            --marine: #7a3cff;
+            --brass: #ffe14a;
+            --emerald: #3dff9a;
+            --rose: #ff2d55;
+            --text-main: #fff6ea;
+            --text-sub: #f3c6e4;
+            --text-muted: #d39ab8;
+        }
+        html[data-theme="sail"] body {
+            background:
+                radial-gradient(circle at 80% 0%, rgba(255, 214, 120, 0.28), transparent 28%),
+                linear-gradient(#7ec8e3 0%, #0b3a5b 28%, #041525 28%);
+        }
+        html[data-theme="dead"] body {
+            background:
+                radial-gradient(circle at 12% 8%, #ff4fa3 0, transparent 22%),
+                radial-gradient(circle at 88% 12%, #7a3cff 0, transparent 26%),
+                radial-gradient(circle at 70% 80%, #3dff9a 0, transparent 18%),
+                radial-gradient(circle at 20% 70%, #ffe14a 0, transparent 16%),
+                #16021c;
+            background-size: 140% 140%;
+            animation: n9-dye 16s ease-in-out infinite alternate;
+        }
+        @keyframes n9-dye { from { background-position: 0% 0%; } to { background-position: 8% 12%; } }
+        .n9-hero-wrap { margin: -4px -4px 12px; border-radius: 16px; overflow: hidden; border: 2px solid var(--brass); }
+        .n9-hero { display: block; width: 100%; height: 108px; }
+        .n9-hero[hidden] { display: none; }
+        .n9-wave { animation: n9-swell 3.2s ease-in-out infinite; }
+        .n9-wave2 { animation-duration: 4.4s; animation-direction: reverse; }
+        @keyframes n9-swell { from { transform: translateX(0); } to { transform: translateX(-18px); } }
+        .n9-bob-boat { transform-origin: 110px 74px; animation: n9-heel 3.6s ease-in-out infinite; }
+        @keyframes n9-heel { 50% { transform: rotate(-2.5deg) translateY(-2px); } }
+        .n9-skull { transform-origin: 180px 58px; animation: n9-float 3.4s ease-in-out infinite; }
+        @keyframes n9-float { 50% { transform: translateY(-4px); } }
+        .n9-dance { transform-origin: 310px 70px; animation: n9-hop 0.7s ease-in-out infinite; }
+        @keyframes n9-hop { 50% { transform: translateY(-6px) rotate(6deg); } }
+        .action-pill.on { outline: 2px solid var(--brass); background: var(--accent-soft); }
+        html[data-theme="sail"] .card, html[data-theme="dead"] .card,
+        html[data-theme="sail"] .top-cockpit, html[data-theme="dead"] .top-cockpit {
+            background: color-mix(in srgb, var(--surface) 90%, transparent);
+        }
+        @media (prefers-reduced-motion: reduce) {
+            html[data-theme="dead"] body, .n9-wave, .n9-bob-boat, .n9-skull, .n9-dance { animation: none; }
+        }
     </style>
+    <script>
+        (function () {
+            try {
+                var t = localStorage.getItem('nautik9_theme');
+                var p = localStorage.getItem('nautik9_plain') === '1';
+                document.documentElement.dataset.theme = t === 'dead' ? 'dead' : 'sail';
+                document.documentElement.dataset.voice = p ? 'plain' : 'character';
+            } catch (e) {
+                document.documentElement.dataset.theme = 'sail';
+                document.documentElement.dataset.voice = 'character';
+            }
+        })();
+    </script>
 </head>
 <body>
 
     <!-- Top Cockpit Header -->
     <header class="top-cockpit">
+        <div class="n9-hero-wrap">
+            <svg class="n9-hero" id="heroSail" viewBox="0 0 360 108" role="img" aria-label="A sailing dog at the helm">
+                <defs>
+                    <linearGradient id="n9sky" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0" stop-color="#b7e6f5"/>
+                        <stop offset="1" stop-color="#1a6f8a"/>
+                    </linearGradient>
+                </defs>
+                <rect width="360" height="108" fill="url(#n9sky)"/>
+                <circle cx="312" cy="26" r="14" fill="#ffe08a"/>
+                <g class="n9-bob-boat">
+                    <path d="M48 74 L168 74 L152 90 H64 Z" fill="#e2b15a"/>
+                    <path d="M104 74 L104 34 L152 66 Z" fill="#f7f3ea"/>
+                    <path d="M104 74 L104 42 L64 66 Z" fill="#f0e2c4"/>
+                    <circle cx="104" cy="52" r="9" fill="#c9844a"/>
+                    <ellipse cx="95" cy="48" rx="3.2" ry="6" fill="#8a5a32"/>
+                    <ellipse cx="113" cy="48" rx="3.2" ry="6" fill="#8a5a32"/>
+                    <path d="M94 46 L104 34 L114 46 Z" fill="#f7f3ea"/>
+                    <rect x="102" y="34" width="4" height="8" fill="#1a6f8a"/>
+                    <circle cx="101" cy="52" r="1.1" fill="#1a120c"/>
+                    <circle cx="107" cy="52" r="1.1" fill="#1a120c"/>
+                    <path d="M99 56 Q104 59 109 56" stroke="#1a120c" fill="none" stroke-width="1"/>
+                    <circle cx="188" cy="78" r="12" fill="none" stroke="#f6f1e4" stroke-width="3"/>
+                    <path d="M188 66 V90 M176 78 H200" stroke="#f6f1e4" stroke-width="2"/>
+                </g>
+                <path class="n9-wave" d="M-20 78 Q 20 64 60 78 T 140 78 T 220 78 T 300 78 T 380 78 V108 H-20 Z" fill="#0e5870"/>
+                <path class="n9-wave n9-wave2" d="M-20 90 Q 30 78 80 90 T 180 90 T 280 90 T 400 90 V108 H-20 Z" fill="#083246"/>
+            </svg>
+            <svg class="n9-hero" id="heroDead" viewBox="0 0 360 108" hidden role="img" aria-label="A rose-crowned skull and a dancing dog">
+                <rect width="360" height="108" fill="#2a0633"/>
+                <circle cx="40" cy="20" r="36" fill="#ff4fa3" opacity="0.85"/>
+                <circle cx="330" cy="16" r="42" fill="#7a3cff" opacity="0.8"/>
+                <circle cx="200" cy="100" r="40" fill="#3dff9a" opacity="0.55"/>
+                <circle cx="90" cy="96" r="28" fill="#ffe14a" opacity="0.7"/>
+                <g class="n9-skull">
+                    <circle cx="180" cy="48" r="26" fill="#fff6ea"/>
+                    <ellipse cx="170" cy="48" rx="7" ry="8" fill="#1a0614"/>
+                    <ellipse cx="190" cy="48" rx="7" ry="8" fill="#1a0614"/>
+                    <path d="M180 56 L176 64 L184 64 Z" fill="#1a0614"/>
+                    <path d="M166 70 H194" stroke="#1a0614" stroke-width="2"/>
+                    <path d="M170 74 H190 M172 78 H188" stroke="#1a0614" stroke-width="1.4"/>
+                    <g fill="#ff2d55">
+                        <circle cx="148" cy="36" r="7"/>
+                        <circle cx="140" cy="44" r="5"/>
+                        <circle cx="156" cy="46" r="5"/>
+                        <circle cx="212" cy="36" r="7"/>
+                        <circle cx="220" cy="44" r="5"/>
+                        <circle cx="204" cy="46" r="5"/>
+                    </g>
+                    <circle cx="148" cy="36" r="2" fill="#ffe14a"/>
+                    <circle cx="212" cy="36" r="2" fill="#ffe14a"/>
+                </g>
+                <g class="n9-dance" fill="#c9844a">
+                    <circle cx="308" cy="62" r="8"/>
+                    <ellipse cx="300" cy="58" rx="3" ry="5"/>
+                    <ellipse cx="316" cy="58" rx="3" ry="5"/>
+                    <rect x="304" y="70" width="8" height="12" rx="3" fill="#7a3cff"/>
+                    <path d="M300 78 L292 88 M316 78 L326 70" stroke="#fff6ea" stroke-width="2" fill="none"/>
+                    <path d="M300 56 Q308 50 316 56" fill="#ff4fa3"/>
+                </g>
+                <circle cx="28" cy="70" r="2" fill="#fff"/>
+                <circle cx="250" cy="22" r="1.6" fill="#fff"/>
+                <circle cx="70" cy="24" r="1.4" fill="#fff"/>
+            </svg>
+        </div>
         <div class="cockpit-top-row">
             <div class="avatar-bezel" id="avatarBezel" onclick="triggerBark()" title="Tap Mack to Bark!">
                 <img src="" alt="Mack Companion Avatar" class="avatar-img">
@@ -927,11 +1075,13 @@
                 <div class="vessel-title-row">
                     <div class="vessel-title">Mighty Mack • Thom's NautiDog 🐾</div>
                     <span class="vessel-badge" id="hostBadge">WEB</span>
+                    <span class="vessel-badge" id="netBadge">...</span>
                 </div>
                 <div class="status-pill" id="avatarBadge">
                     <span class="pulse-light"></span>
                     <span id="avatarStateText">Mack is on watch</span>
                 </div>
+                <div id="netNote" style="font-size:0.72rem;color:var(--rose);margin-top:4px;"></div>
             </div>
         </div>
 
@@ -951,6 +1101,18 @@
             <button class="action-pill" onclick="playHaptic()">
                 <span class="action-pill-icon">🔔</span>
                 <span>Ship's Bell</span>
+            </button>
+            <button type="button" class="action-pill" id="themeSail" onclick="setLook('sail')">
+                <span class="action-pill-icon">⛵</span>
+                <span>Sailing dog</span>
+            </button>
+            <button type="button" class="action-pill" id="themeDead" onclick="setLook('dead')">
+                <span class="action-pill-icon">🌹</span>
+                <span>Deadhead</span>
+            </button>
+            <button type="button" class="action-pill" id="plainTalk" onclick="togglePlain()" aria-pressed="false">
+                <span class="action-pill-icon">▤</span>
+                <span>Plain talk</span>
             </button>
         </div>
     </header>
@@ -996,6 +1158,11 @@
                 Asked in this order; the first that answers wins. If none answer you get an error, never an invented reply. Edit providers.json in the config folder to change the list.
             </p>
             <div id="providersList" style="display:flex;flex-direction:column;gap:8px;"></div>
+            <div style="margin-top:10px;font-size:0.85rem;">
+                <label for="modelPick">Home model:</label>
+                <select id="modelPick" onchange="pickModel(this.value)" style="max-width:100%;background:#0b1220;color:#e2e8f0;border:1px solid var(--border);border-radius:8px;padding:4px;"><option value="auto">Auto (smart)</option></select>
+                <div id="modelPickNote" style="color:var(--text-sub);font-size:0.75rem;margin-top:3px;"></div>
+            </div>
             <div id="offlineModelBox" style="display:none;margin-top:10px;font-size:0.85rem;"></div>
         </div>
 
@@ -1309,10 +1476,28 @@
             if (url.startsWith('/')) {
                 init.headers = Object.assign({}, init.headers || {}, { 'Authorization': 'Bearer ' + getToken() });
             }
-            const res = await _fetch(input, init);
+            let res;
+            try {
+                res = await _fetch(input, init);
+            } catch (e) {
+                // Airplane mode: the WebView refuses even loopback requests ("Failed to fetch").
+                // The app then does the request from Java and hands the answer back.
+                if (!(url.startsWith('/') && window.NautiK9Android && window.NautiK9Android.httpAsync)) throw e;
+                res = await bridgeFetch(url, init);
+            }
             if (res.status === 401 && url.startsWith('/api/') && url !== '/api/health') showTokenPrompt();
             return res;
         };
+        const n9HttpWaiters = {};
+        window.n9OnHttp = r => { const w = n9HttpWaiters[r.id]; if (w) { delete n9HttpWaiters[r.id]; w(r); } };
+        function bridgeFetch(url, init) {
+            return new Promise(resolve => {
+                const id = 'h' + Date.now() + Math.random().toString(16).slice(2);
+                n9HttpWaiters[id] = r => resolve(new Response(r.status ? r.body : '', { status: r.status || 503, headers: { 'Content-Type': 'application/json' } }));
+                const h = init.headers || {};
+                window.NautiK9Android.httpAsync(id, (init.method || 'GET').toUpperCase(), url, h['Content-Type'] || '', typeof init.body === 'string' ? init.body : '');
+            });
+        }
         function showTokenPrompt() {
             if (document.getElementById('tokenBanner')) return;
             const b = document.createElement('div');
@@ -1364,10 +1549,14 @@
             let st = {};
             try { st = JSON.parse(AppBridge.offlineModelStatus()); } catch (e) {}
             if (st.state === 'ready') {
-                box.innerHTML = `On-device model: <b>${esc(st.file)}</b> (${esc(st.size_mb)} MB), ${st.running ? 'running' : 'not running'}`;
+                box.innerHTML = `On-device model: <b>${esc(st.file)}</b> (${esc(st.size_mb)} MB), ` +
+                    (st.running ? 'running (stops after 10 idle minutes) <button class="btn" onclick="AppBridge.stopOfflineModel();setTimeout(renderOfflineModel,800)">Stop now</button>'
+                                : 'asleep, wakes when asked <button class="btn" onclick="wakeModel(t=>{document.getElementById(\'offlineModelBox\').innerText=t}).then(renderOfflineModel)">Wake</button>');
             } else if (st.state === 'downloading') {
                 box.innerHTML = `On-device model downloading: ${esc(st.done_mb)} / ${esc(st.size_mb)} MB`;
                 setTimeout(renderOfflineModel, 3000);
+            } else if (!netState.online) {
+                box.innerHTML = `No on-device model yet, and downloading it (${esc(st.default_size_mb || '?')} MB) needs a connection.`;
             } else {
                 box.innerHTML = `No on-device model yet, so with no network nothing can answer. ` +
                     `<button class="btn" onclick="AppBridge.downloadOfflineModel();setTimeout(renderOfflineModel,1500)">Download ${esc(st.default_name || 'model')} (${esc(st.default_size_mb || '?')} MB)</button>`;
@@ -1411,6 +1600,100 @@
             if (!b || typeof b[name] !== 'function') return null;
             try { return JSON.parse(b[name](...args)); } catch (e) { return { error: String(e) }; }
         }
+        // ---- Online / offline ----
+        // The app reports the phone's connectivity; the server then skips remote endpoints and web
+        // tools at once with a plain message. In a browser, navigator.onLine is the best we have.
+        let netState = { online: true, transport: 'unknown', metered: false };
+        function applyNet(n) {
+            if (!n || n.error) return;
+            netState = n;
+            const badge = document.getElementById('netBadge');
+            if (badge) {
+                badge.innerText = n.online ? ('ONLINE ' + (n.transport || '').toUpperCase()).trim() : 'OFFLINE';
+                badge.style.color = n.online ? 'var(--emerald)' : 'var(--rose)';
+                badge.style.borderColor = n.online ? 'var(--emerald)' : 'var(--rose)';
+            }
+            updateNetNote();
+            const body = { online: !!n.online };
+            if (typeof n.tailscale === 'boolean') body.tailscale = n.tailscale;
+            fetch('/api/net', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => {});
+            if (typeof renderOfflineModel === 'function') renderOfflineModel();
+        }
+        // Home endpoints on the tailnet (100.64.0.0/10) need Tailscale on the phone; say so plainly.
+        let providerUrls = [];
+        const isTailnetUrl = u => { const m = /\/\/(\d+)\.(\d+)\./.exec(u || ''); return !!m && m[1] === '100' && +m[2] >= 64 && +m[2] < 128; };
+        function updateNetNote() {
+            const note = document.getElementById('netNote');
+            if (!note) return;
+            const n = netState;
+            if (!n.online) { note.innerText = 'No connection: notes, search, texts, GPS, torch and the on-device model work; web, weather, fleet and the home Lemonade need a connection.'; return; }
+            const homeOnTailnet = providerUrls.some(isTailnetUrl);
+            if (homeOnTailnet && n.tailscale === false) {
+                note.innerText = "Can't reach home: Tailscale is off on the phone" + (n.tailscale_installed === false ? ' (not installed)' : '') + (n.transport === 'cell' ? '. On mobile data only the on-device model answers until it is on.' : '.');
+                return;
+            }
+            note.innerText = '';
+        }
+        window.n9OnNetwork = applyNet;
+        function readNet() {
+            const r = bridgeCall('network');
+            applyNet(r || { online: navigator.onLine !== false, transport: 'browser', metered: false });
+        }
+        window.addEventListener('online', readNet);
+        window.addEventListener('offline', readNet);
+
+        // Wake the on-device model (stopped after 10 idle minutes) and wait until it answers.
+        async function wakeModel(onStatus) {
+            const b = window.NautiK9Android;
+            if (!b || !b.ensureOfflineModel) return false;
+            let st = bridgeCall('offlineModelStatus') || {};
+            if (st.state !== 'ready') return false;
+            if (st.running) return true;
+            b.ensureOfflineModel();
+            for (let i = 0; i < 60; i++) {
+                if (onStatus) onStatus('Waking the on-device model... ' + (i * 0.5).toFixed(0) + 's');
+                await new Promise(r => setTimeout(r, 500));
+                st = bridgeCall('offlineModelStatus') || {};
+                if (st.running) { if (typeof renderOfflineModel === 'function') renderOfflineModel(); return true; }
+            }
+            return false;
+        }
+        const asleepErr = s => /on-device[^"]*(refused|unreachable)/.test(String(s || ''));
+        const localDown = d => asleepErr(JSON.stringify(d && (d.attempts || d.message && d.message.draft_error) || ''));
+        // Will the first endpoint a request tries be the on-device model? (offline phone, or it heads the chain)
+        async function localIsFirst() {
+            try { return !!(await (await fetch('/api/net')).json()).local_first; } catch (e) { return false; }
+        }
+        // An SMS draft that failed only because the on-device model was asleep: wake it and redo
+        // THAT draft (same message id), instead of posting the text again as a new inbox entry.
+        async function redraftIfAsleep(msg, onStatus) {
+            if (!msg || msg.status !== 'NoModel' || !asleepErr(msg.draft_error)) return msg;
+            if (!(await wakeModel(onStatus))) return msg;
+            if (onStatus) onStatus('Mack is working...');
+            try {
+                const r = await fetch('/api/sms/action', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: msg.id, action: 'regenerate' }) });
+                return (await r.json()).message || msg;
+            } catch (e) { return msg; }
+        }
+        // A model request. Offline (or offline toggle): the on-device model is woken first. Online: the
+        // chain runs as configured; if the on-device entry was asleep and nothing else answered, it is
+        // woken and the request sent once more. `replay=false` is for requests that change state
+        // when posted (a chat turn, a new inbox entry, Retry): they are never sent twice, so the model
+        // is woken BEFORE the request whenever it is the first endpoint that will be tried.
+        async function modelFetch(url, init, onStatus, forceLocal, replay = true) {
+            readNet(); // fresh online/Tailscale state before every model request (a VPN can drop without a network change)
+            if (forceLocal || !netState.online || (!replay && await localIsFirst())) await wakeModel(onStatus);
+            let res = await fetch(url, init);
+            if (!replay) return res;
+            let data = null;
+            try { data = await res.clone().json(); } catch (e) {}
+            if (!res.ok && localDown(data) && await wakeModel(onStatus)) {
+                if (onStatus) onStatus('Mack is working...');
+                res = await fetch(url, init);
+            }
+            return res;
+        }
+
         // Silent pulse for every button press; the Haptic Pulse button reports what happened.
         function playHaptic(report) {
             const r = bridgeCall('vibrate', '60,40,60');
@@ -1471,11 +1754,11 @@
             planContainer.innerHTML = '';
 
             try {
-                const res = await fetch('/api/tot', {
+                const res = await modelFetch('/api/tot', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ problem: prob, budget: 12 })
-                });
+                }, t => { container.innerHTML = '<div style="font-size:0.85rem;color:#38bdf8;padding:12px;text-align:center;">' + esc(t) + '</div>'; });
                 const data = await res.json();
                 container.innerHTML = '';
                 if (!res.ok || !data.nodes) {
@@ -1720,11 +2003,23 @@
         })();
 
         // SMS Dispatcher & Work Mode Functions
+        const redraftTried = new Set();
         async function loadSmsInbox(sync = false) {
             if (sync) await pushAppInbox();
             try {
                 const res = await fetch('/api/sms/inbox' + (sync ? '?sync=true' : ''));
-                const data = await res.json();
+                let data = await res.json();
+                // Texts ingested while the on-device model slept have no draft: wake it and draft them
+                // (once per text per page load), so ingestion needs no model awake in advance.
+                if (sync && Array.isArray(data.messages)) {
+                    const asleep = data.messages.filter(m => m.status === 'NoModel' && asleepErr(m.draft_error) && !redraftTried.has(m.id));
+                    if (asleep.length) {
+                        asleep.forEach(m => redraftTried.add(m.id));
+                        let any = false;
+                        for (const m of asleep) { const r = await redraftIfAsleep(m); any = any || r.status !== 'NoModel'; }
+                        if (any) data = await (await fetch('/api/sms/inbox')).json();
+                    }
+                }
                 
                 // Update toggles
                 if (data.work_config) {
@@ -1849,6 +2144,10 @@
                     body: JSON.stringify({ id, action })
                 });
                 const data = await res.json();
+                if (action === 'regenerate' && data.message) {
+                    const draftEl = document.getElementById('draft-text-' + id);
+                    await redraftIfAsleep(data.message, t => { if (draftEl) draftEl.innerText = t; });
+                }
                 if (data.composer) {
                     if (!(await openComposer(id, data.composer))) alert('Could not open the SMS composer');
                 } else if (data.dispatch_result) {
@@ -1874,12 +2173,14 @@
             statusEl.innerText = "Drafting...";
             statusEl.style.color = "var(--accent)";
             try {
-                const res = await fetch('/api/sms/incoming', {
+                const say = t => { statusEl.innerText = t; };
+                const res = await modelFetch('/api/sms/incoming', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ sender, body })
-                });
+                }, say, false, false);
                 const data = await res.json();
+                data.message = await redraftIfAsleep(data.message, say);
                 if (data.message.status === 'NoModel') {
                     statusEl.innerText = 'No draft: ' + (data.message.draft_error || 'no model endpoint answered');
                     statusEl.style.color = "var(--rose)";
@@ -1903,12 +2204,14 @@
             statusEl.innerText = "Opening the phone SMS composer...";
             statusEl.style.color = "var(--gold)";
             try {
-                const res = await fetch('/api/sms/incoming', {
+                const say = t => { statusEl.innerText = t; };
+                const res = await modelFetch('/api/sms/incoming', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ sender, body })
-                });
+                }, say, false, false);
                 const data = await res.json();
+                if (data.message) data.message = await redraftIfAsleep(data.message, say);
                 if (data.message && data.message.id) {
                     const actRes = await fetch('/api/sms/action', {
                         method: 'POST',
@@ -1938,7 +2241,7 @@
                 const res = await fetch('/api/fleet/status');
                 const data = await res.json();
                 if (!res.ok || data.ok === false) {
-                    src.innerText = 'Fleet aggregator error: ' + (data.error || ('HTTP ' + res.status));
+                    src.innerText = data.offline ? 'Fleet Deck needs a connection: ' + data.error : 'Fleet aggregator error: ' + (data.error || ('HTTP ' + res.status));
                     src.style.color = 'var(--rose)';
                     document.getElementById('swarmClusterStatus').innerText = 'NO DATA';
                     grid.innerHTML = '';
@@ -1977,6 +2280,25 @@
             }
         }
 
+        // Model picker: "Auto (smart)" lets the home router choose per request; an id goes straight to it.
+        async function loadModelPicker() {
+            const sel = document.getElementById('modelPick');
+            if (!sel) return;
+            let saved = 'auto';
+            try { saved = localStorage.getItem('nautik9_model') || 'auto'; } catch (e) {}
+            if (saved !== 'auto') fetch('/api/model', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: saved }) }).catch(() => {});
+            let d = { models: [] };
+            try { d = await (await fetch('/api/models')).json(); } catch (e) {}
+            sel.innerHTML = '<option value="auto">Auto (smart)</option>' + (d.models || []).map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('');
+            if (saved !== 'auto' && !(d.models || []).includes(saved)) sel.innerHTML += `<option value="${esc(saved)}">${esc(saved)} (not listed now)</option>`;
+            sel.value = saved;
+            const note = document.getElementById('modelPickNote');
+            if (note) note.innerText = d.ok ? `${d.models.length} model(s) from ${d.provider}` : ('Model list unavailable: ' + (d.error || 'no remote provider'));
+        }
+        async function pickModel(v) {
+            try { localStorage.setItem('nautik9_model', v); } catch (e) {}
+            await fetch('/api/model', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: v }) }).catch(() => {});
+        }
         async function loadDeviceAndProviders() {
             try {
                 const st = await (await fetch('/api/status')).json();
@@ -1987,7 +2309,10 @@
             } catch (e) {}
             try {
                 const pr = await (await fetch('/api/providers')).json();
+                providerUrls = pr.providers.map(p => p.base_url);
+                updateNetNote();
                 document.getElementById('providersBadge').innerText = pr.providers.length + ' endpoint(s)';
+                loadModelPicker();
                 document.getElementById('providersList').innerHTML = pr.providers.map((p, i) => `
                     <div class="node-mini-card">
                         <div class="node-name"><span>${i + 1}. ${esc(p.name)}</span>${p.offline ? '<span class="badge-status status-pending">OFFLINE-OK</span>' : ''}</div>
@@ -2009,7 +2334,7 @@
         function renderAgentReply(el, r) {
             const tools = (r.tool_calls || []).map(t => `${t.ok ? '✓' : '✗'} ${t.name}`).join('  ');
             el.innerText = (r.reply || ('⚠ ' + r.stopped)) +
-                (tools ? `\n\n🔧 ${tools}` : '') + `\n[${r.model} via ${r.provider} • ${r.steps} step(s)]`;
+                (tools ? `\n\n🔧 ${tools}` : '') + `\n[${r.model} via ${r.provider}${r.lane ? ' (' + r.lane + ')' : ''} • ${r.steps} step(s)]`;
             document.querySelectorAll('.reply-actions').forEach(n => n.remove()); // Retry only on the latest reply
             const bar = document.createElement('div');
             bar.className = 'reply-actions';
@@ -2025,8 +2350,9 @@
             };
             const up = mk('👍', () => rate(1, up)), down = mk('👎', () => rate(-1, down));
             const retry = mk('↻ Retry', async () => {
-                el.innerText = 'Mack is trying again...';
-                const res = await fetch('/api/agent/sessions/' + r.session_id + '/retry', { method: 'POST' });
+                el.innerText = chatVoice().plain ? 'Working...' : 'Mack is trying again...';
+                // Retry cuts the earlier answer before it generates: wake the model first, never replay it.
+                const res = await modelFetch('/api/agent/sessions/' + r.session_id + '/retry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(chatVoice()) }, t => { el.innerText = t; }, false, false);
                 const data = await res.json();
                 if (!res.ok || data.ok === false) { el.innerText = 'Retry failed (' + res.status + '): ' + (data.error || res.statusText); el.style.borderColor = 'var(--rose)'; }
                 else renderAgentReply(el, data.result);
@@ -2049,14 +2375,16 @@
 
             const mackMsg = document.createElement('div');
             mackMsg.className = 'msg-bubble msg-mack';
-            mackMsg.innerText = "Mack is working...";
+            const voice = chatVoice();
+            mackMsg.innerText = voice.plain ? "Working..." : "Mack is working...";
             stream.appendChild(mackMsg);
             stream.scrollTop = stream.scrollHeight;
 
             const offline = document.getElementById('offlineToggle').checked;
             try {
+                const say = t => { mackMsg.innerText = t; };
                 if (offline) {
-                    const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: p, offline: true }) });
+                    const res = await modelFetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: p, offline: true, theme: voice.theme, plain: voice.plain }) }, say, true);
                     const data = await res.json();
                     if (!res.ok || data.ok === false) {
                         mackMsg.innerText = 'No offline model answered (' + res.status + '): ' + (data.error || res.statusText) + (data.attempts && data.attempts.length ? '\n' + data.attempts.join('\n') : '');
@@ -2065,7 +2393,7 @@
                         mackMsg.innerText = data.response + `\n\n[${data.model_used} • ${data.duration_ms}ms]`;
                     }
                 } else {
-                    const res = await fetch('/api/agent/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: p, session_id: chatSession }) });
+                    const res = await modelFetch('/api/agent/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: p, session_id: chatSession, theme: voice.theme, plain: voice.plain }) }, say, false, false);
                     const data = await res.json();
                     if (!res.ok || data.ok === false) {
                         mackMsg.innerText = 'No model answered (' + res.status + '): ' + (data.error || res.statusText) + (data.attempts && data.attempts.length ? '\n' + data.attempts.join('\n') : '');
@@ -2178,7 +2506,51 @@
             if (r.ok) { document.getElementById('auText').value = ''; loadAuto(); }
         }
 
+        function chatVoice() {
+            return {
+                theme: document.documentElement.dataset.theme === 'dead' ? 'dead' : 'sail',
+                plain: document.documentElement.dataset.voice === 'plain'
+            };
+        }
+        function paintLook() {
+            const dead = document.documentElement.dataset.theme === 'dead';
+            const plain = document.documentElement.dataset.voice === 'plain';
+            const sailBtn = document.getElementById('themeSail');
+            const deadBtn = document.getElementById('themeDead');
+            const plainBtn = document.getElementById('plainTalk');
+            if (sailBtn) sailBtn.classList.toggle('on', !dead);
+            if (deadBtn) deadBtn.classList.toggle('on', dead);
+            if (plainBtn) {
+                plainBtn.classList.toggle('on', plain);
+                plainBtn.setAttribute('aria-pressed', plain ? 'true' : 'false');
+                const label = plainBtn.querySelector('span:last-child');
+                if (label) label.innerText = plain ? 'Plain talk on' : 'Plain talk';
+            }
+            const heroS = document.getElementById('heroSail');
+            const heroD = document.getElementById('heroDead');
+            if (heroS) heroS.hidden = dead;
+            if (heroD) heroD.hidden = !dead;
+            const meta = document.querySelector('meta[name="theme-color"]');
+            if (meta) meta.setAttribute('content', dead ? '#2a0638' : '#041525');
+            const input = document.getElementById('chatInput');
+            if (input && document.activeElement !== input) {
+                input.placeholder = plain ? 'Business note...' : (dead ? 'Ask the rail...' : 'Ask Mack on the helm...');
+            }
+        }
+        function setLook(theme) {
+            document.documentElement.dataset.theme = theme === 'dead' ? 'dead' : 'sail';
+            try { localStorage.setItem('nautik9_theme', document.documentElement.dataset.theme); } catch (e) {}
+            paintLook();
+        }
+        function togglePlain() {
+            const on = document.documentElement.dataset.voice !== 'plain';
+            document.documentElement.dataset.voice = on ? 'plain' : 'character';
+            try { localStorage.setItem('nautik9_plain', on ? '1' : '0'); } catch (e) {}
+            paintLook();
+        }
         // Auto initialization
+        paintLook();
+        readNet();
         initSensors();
         loadDeviceAndProviders();
         loadNotes();

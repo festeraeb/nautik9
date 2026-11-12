@@ -6,8 +6,10 @@ computer or adb once it is installed.
 - **Server**: `libnautik9.so` is the `nautik9-app` binary built for arm64. The app starts it as
   `serve --bind 127.0.0.1 --sms-bridge app`; the vault and config folder are in the app's private
   storage.
-- **Offline model**: `libllama_server.so` is llama.cpp's `llama-server`. The app starts it on
-  127.0.0.1:8341 when a `.gguf` is in the app's `models` folder. The page offers a download of
+- **Offline model**: `libllama_server.so` is llama.cpp's `llama-server`. The page starts it on
+  127.0.0.1:8341 when an answer is needed and a `.gguf` is in the app's `models` folder, and the
+  app stops it after 10 idle minutes (it wakes in a few seconds when asked again). Swiping the
+  app away stops the model, the server and the foreground service. The page offers a download of
   Qwen3-4B-Instruct-2507 Q4_K_M (2.5 GB) through the system download manager. On a Galaxy S25
   Ultra (CPU only) it generated about 20 tokens/s and read prompts at about 80 tokens/s.
 - **Texts**: the app holds READ_SMS and pushes the newest inbox rows to the server
@@ -15,6 +17,16 @@ computer or adb once it is installed.
   never sends a text.
 - **Providers**: on first start `providers.json` lists only the on-device model. To ask a home
   Lemonade first when the phone can reach it, add it above the on-device entry (see below).
+
+## Online and offline
+
+The app tells the page the phone's connectivity (`window.n9OnNetwork`, badge `ONLINE WIFI` /
+`ONLINE CELL` / `OFFLINE`) and the page tells the server (`POST /api/net {"online": bool}`).
+Offline: notes, search, texts, GPS, torch, haptic and the on-device model work; remote endpoints
+are skipped at once ("skipped, the phone is offline"); `web_search`, `web_fetch`, `weather` and
+`http_request` answer "This needs an internet connection and the phone is offline right now.";
+the Fleet Deck and the model download say they need a connection. Nothing is invented offline.
+`GET /api/net` reports `online` and `local_model_idle_seconds`.
 
 ## Build
 
@@ -57,7 +69,10 @@ To put a home Lemonade first, edit `files/config/providers.json` (with `run-as`)
 ]}
 ```
 
-An endpoint that cannot be reached fails in about 3 s and the next one is asked.
+An endpoint that cannot be reached fails in about 3 s and the next one is asked. A key-gated
+endpoint (for example `https://cesarops.com/lemonade/v1`) takes `"api_key": "..."` and should name
+its `"model"`, because the first model a Lemonade lists may be an embedding model. Keep the file
+mode 600; `/api/providers` never returns keys.
 
 ## Not done yet
 

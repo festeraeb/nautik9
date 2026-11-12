@@ -29,9 +29,50 @@ use std::sync::Arc;
 use crate::tools::{list_skills, memory_bullets, note_by_path, redact, Registry, ToolCtx, MEMORY_PATH};
 
 pub const BASE_INTRO: &str = "You are Mighty Mack, Thom's NautiDog and helpful companion (sometimes). You work inside NautiK9, a private markdown vault. \
+Answer directly from what you know unless the question needs live data (weather, news, prices, the web) or an action (notes, memory, schedules); then use a tool. \
 Use your tools to look things up instead of guessing: search and read notes before answering questions about them, and cite the note paths you used. \
 Ask before deleting or replacing notes the user did not ask you to change. If a tool fails, say so plainly. Never invent facts, results or sources. \
 Your own knowledge stops before today (the date is at the end of this prompt): for weather, news, prices or anything current, use the weather or web_search tool and trust what it returns over what you remember.";
+
+/// Which picture set is on screen. The voice can be turned off without changing this.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Theme {
+    Sail,
+    Dead,
+}
+
+impl Theme {
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "dead" | "deadhead" => Theme::Dead,
+            _ => Theme::Sail,
+        }
+    }
+}
+
+/// Chat voice. `plain` is the quick off switch: business sentences, same pictures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChatVoice {
+    pub theme: Theme,
+    pub plain: bool,
+}
+
+impl Default for ChatVoice {
+    fn default() -> Self {
+        ChatVoice { theme: Theme::Sail, plain: false }
+    }
+}
+
+/// One instruction appended after persona and memory so it wins on tone only.
+pub fn voice_line(voice: ChatVoice) -> &'static str {
+    if voice.plain {
+        "Voice for this turn: plain business. Write short, direct, professional sentences. No sailing talk, no psychedelic talk, no nicknames, no jokes, no emoji. The pictures on screen are not your voice. Keep the same honesty rules and tools."
+    } else if voice.theme == Theme::Dead {
+        "Voice for this turn: a warm deadhead on the rail. A little color is welcome (roses, a long strange trip) but never song lyrics and never instead of the facts. Stay useful."
+    } else {
+        "Voice for this turn: Mighty Mack, a sailing dog at the helm. Nautical words are welcome (helm, deck, bearing, fair winds). Stay clear and useful."
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct AgentConfig {
@@ -45,7 +86,7 @@ pub struct AgentConfig {
 
 impl Default for AgentConfig {
     fn default() -> Self {
-        AgentConfig { max_steps: 8, context_chars: 48_000, max_tool_chars: 12_000, memory_k: 8, max_tokens: 2048, delegate_steps: 6 }
+        AgentConfig { max_steps: 4, context_chars: 48_000, max_tool_chars: 12_000, memory_k: 8, max_tokens: 2048, delegate_steps: 6 }
     }
 }
 
@@ -66,6 +107,8 @@ pub struct TurnResult {
     pub model: String,
     pub provider: String,
     pub endpoint: String,
+    /// Router lane that answered (X-Routed-Lane), if any.
+    pub lane: Option<String>,
     pub steps: usize,
     pub tool_calls: Vec<ToolTrace>,
     /// Messages left out of the prompt by the context guard on the last call.
@@ -80,6 +123,40 @@ pub struct Agent {
     pub ctx: ToolCtx,
     pub cfg: AgentConfig,
     learned_budget: AtomicUsize,
+}
+
+/// Added to the system prompt for the last model call, when the tool steps are used up.
+const CAP_NOTE: &str = "Tool steps are used up. Answer now from what you already have, and say plainly what is still unknown.";
+
+/// Whether a user message may need a tool: long or mentioning live data, the web, notes or an
+/// action. Short greetings and plain questions go to the model without tools.
+pub fn needs_tools(msg: &str) -> bool {
+    let m = msg.to_lowercase();
+    if m.chars().count() > 160 {
+        return true;
+    }
+    const HINTS: &[&str] = &[
+        "weather", "forecast", "temperature", "wind", "news", "latest", "today", "tonight", "tomorrow", "now", "current",
+        "price", "search", "look up", "lookup", "find", "google", "web", "http", "www.", "fetch", "read", "open",
+        "note", "vault", "remember", "memory", "memories", "journal", "save", "write", "edit", "delete", "list",
+        "schedule", "remind", "cron", "every ", "at ", "when is", "when did", "where is", "who is", "what is the", "how many",
+        "wreck", "sink", "sank", "tide", "sunset", "sunrise", "map", "distance", "convert", "calculate", "skill", "playbook", "flow", "sms", "text ",
+    ];
+    HINTS.iter().any(|h| m.contains(h))
+}
+
+/// The tools gate for one turn: the keyword test, widened for what a keyword test cannot see.
+/// A reply to the assistant's own question ("Yes, do it"), anything after tools were already used in
+/// this conversation, and a message that names a note path ("Summarize Boat/Log.md") all keep the
+/// tools, so a miss in the word list never removes the means to do what was just asked.
+pub fn needs_tools_in(history: &[Value], msg: &str) -> bool {
+    if needs_tools(msg) || msg.contains('/') || msg.to_lowercase().contains(".md") {
+        return true;
+    }
+    let prior = &history[..history.len().saturating_sub(1)];
+    let used_tools = prior.iter().any(|m| m["role"] == "tool" || m.get("tool_calls").is_some_and(|t| !t.is_null()));
+    let asked = prior.iter().rev().find(|m| m["role"] == "assistant").and_then(|m| m["content"].as_str()).is_some_and(|c| c.trim_end().ends_with('?'));
+    used_tools || asked
 }
 
 pub fn strip_html_comments(s: &str) -> String {
@@ -279,14 +356,30 @@ impl Agent {
     }
 
     /// Model + tools until a final answer or the step limit. Appends to `history`.
+    /// A short message that needs no live data or action is sent without the tools array, so a
+    /// router treats it as plain chat (fast path) and the model cannot wander into tools.
     async fn run_loop(&self, system: &Value, history: &mut Vec<Value>, owner: bool, read_only: bool, max_steps: usize) -> Result<(Option<String>, Option<String>, nautik9_lemonade::RawAnswer, usize, Vec<ToolTrace>, usize), ChatFailure> {
         let extra = if owner && !read_only { vec![Self::delegate_schema()] } else { vec![] };
-        let tools = self.tools.schema(owner, read_only, &extra);
+        let all_tools = self.tools.schema(owner, read_only, &extra);
+        let last_user = history.iter().rev().find(|m| m["role"] == "user").and_then(|m| m["content"].as_str()).unwrap_or("");
+        let no_tools = json!([]);
+        let tools = if needs_tools_in(history, last_user) { &all_tools } else { &no_tools };
         let mut traces = Vec::new();
         let mut last = None;
         let mut trimmed = 0;
         for step in 1..=max_steps {
-            let (ans, t) = self.call_model(system, history, &tools).await?;
+            // At the cap: one last call with no tools and a plain instruction to answer now.
+            let at_cap = step == max_steps && step > 1;
+            // The instruction rides in a one-call system prompt, not in the history: it must not be
+            // saved as a user message (Retry would pick it as the request) or become a turn boundary.
+            let capped_system;
+            let sys = if at_cap {
+                capped_system = json!({"role": "system", "content": format!("{}\n\n{}", system["content"].as_str().unwrap_or(""), CAP_NOTE)});
+                &capped_system
+            } else {
+                system
+            };
+            let (ans, t) = self.call_model(sys, history, if at_cap { &no_tools } else { tools }).await?;
             trimmed = t;
             let mut msg = ans.message.clone();
             msg.as_object_mut().map(|o| o.retain(|k, _| ["role", "content", "tool_calls"].contains(&k.as_str())));
@@ -331,6 +424,11 @@ impl Agent {
 
     /// One user turn in a session (created when `session` is None or unknown).
     pub async fn turn(&self, session: Option<&str>, user_text: &str, owner: bool) -> Result<TurnResult, ChatFailure> {
+        self.turn_with(session, user_text, owner, ChatVoice::default()).await
+    }
+
+    /// Same as [`Self::turn`], with the sailing-dog or deadhead voice, or plain business when `voice.plain`.
+    pub async fn turn_with(&self, session: Option<&str>, user_text: &str, owner: bool, voice: ChatVoice) -> Result<TurnResult, ChatFailure> {
         let store = &self.ctx.store;
         let err = |e: String| ChatFailure { error: e, attempts: vec![] };
         let sid = match session {
@@ -347,12 +445,15 @@ impl Agent {
             Some(p) => format!("{p}\n{user_text}"),
             None => user_text.to_string(),
         };
-        let system = json!({"role":"system","content": self.system_prompt(owner, &query).await});
+        let mut prompt = self.system_prompt(owner, &query).await;
+        prompt.push_str("\n\n");
+        prompt.push_str(voice_line(voice));
+        let system = json!({"role":"system","content": prompt});
         let out = self.run_loop(&system, &mut history, owner, false, self.cfg.max_steps).await;
         // Persist what happened, even when the model failed after some tool calls.
         let first_idx = store.append(&sid, &history[before..]).await.map_err(err)?;
         let (reply, stopped, ans, steps, tool_calls, trimmed) = out?;
-        Ok(TurnResult { session_id: sid, reply, stopped, model: ans.model, provider: ans.provider, endpoint: ans.endpoint, steps, tool_calls, trimmed, first_idx })
+        Ok(TurnResult { session_id: sid, reply, stopped, model: ans.model, provider: ans.provider, endpoint: ans.endpoint, lane: ans.lane, steps, tool_calls, trimmed, first_idx })
     }
 }
 
@@ -382,8 +483,40 @@ mod tests {
     }
 
     #[test]
+    fn tools_stay_for_followups_and_note_paths() {
+        let h = |v: Vec<Value>| v;
+        // keyword miss, but a path
+        assert!(needs_tools_in(&h(vec![json!({"role":"user","content":"Summarize Boat/Log.md"})]), "Summarize Boat/Log.md"));
+        // "Yes, do it" after the assistant asked for confirmation
+        let asked = h(vec![json!({"role":"user","content":"tidy that"}), json!({"role":"assistant","content":"Shall I edit it?"}), json!({"role":"user","content":"Yes, do it"})]);
+        assert!(needs_tools_in(&asked, "Yes, do it"));
+        // after tools were used earlier
+        let used = h(vec![json!({"role":"user","content":"x"}), json!({"role":"assistant","content":"","tool_calls":[{"id":"1"}]}), json!({"role":"tool","content":"r"}), json!({"role":"assistant","content":"done."}), json!({"role":"user","content":"thanks, ok"})]);
+        assert!(needs_tools_in(&used, "thanks, ok"));
+        // a plain greeting on a fresh session still takes the fast path
+        assert!(!needs_tools_in(&h(vec![json!({"role":"user","content":"hello there"})]), "hello there"));
+    }
+
+    #[test]
     fn think_blocks_hidden_and_comments_stripped() {
         assert_eq!(visible_text("<think>plan</think>\nAnswer"), "Answer");
         assert_eq!(strip_html_comments("a<!-- hidden -->b"), "ab");
+    }
+
+    #[test]
+    fn plain_talk_drops_the_costume_and_themes_stay_distinct() {
+        let plain = voice_line(ChatVoice { theme: Theme::Dead, plain: true });
+        assert!(plain.contains("plain business"));
+        assert!(plain.contains("No sailing talk"));
+        assert!(!plain.to_lowercase().contains("deadhead"));
+        assert!(!plain.to_lowercase().contains("sailing dog"));
+        let sail = voice_line(ChatVoice { theme: Theme::Sail, plain: false });
+        assert!(sail.contains("sailing dog"));
+        let dead = voice_line(ChatVoice { theme: Theme::Dead, plain: false });
+        assert!(dead.contains("roses"));
+        assert_ne!(sail, dead);
+        assert_eq!(Theme::parse("deadhead"), Theme::Dead);
+        assert_eq!(Theme::parse("sail"), Theme::Sail);
+        assert_eq!(Theme::parse("nope"), Theme::Sail);
     }
 }

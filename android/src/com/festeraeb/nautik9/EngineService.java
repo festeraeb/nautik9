@@ -32,7 +32,19 @@ public class EngineService extends Service {
                 .build();
         if (Build.VERSION.SDK_INT >= 34) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
         else startForeground(1, n);
-        return START_STICKY;
+        // Not sticky: this service only keeps the process alive for engines the activity started.
+        // A sticky restart after the process died would show "running" with nothing running.
+        return START_NOT_STICKY;
+    }
+
+    /** The task was swiped away: stop the native processes and this service (onDestroy of the activity is not guaranteed). */
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        new Thread(() -> {
+            Engines.get(this).stopAll();
+            stopSelf();
+        }, "engines-stop").start();
+        super.onTaskRemoved(rootIntent);
     }
 
     @Override
