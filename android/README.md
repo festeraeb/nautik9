@@ -30,6 +30,27 @@ are skipped at once ("skipped, the phone is offline"); `web_search`, `web_fetch`
 the Fleet Deck and the model download say they need a connection. Nothing is invented offline.
 `GET /api/net` reports `online` and `local_model_idle_seconds`.
 
+## Nexus
+
+The Nexus tab joins a Lemonade Nexus network (crate `nexus-join` over the Nexus SDK's C API,
+`nexus_api.rs`, panel `static/nexus-panel.js`, the same panel Jade uses).
+
+- **SDK**: `liblemonade_nexus_sdk.so` for android-arm64-v8a (lemonade-nexus
+  `scripts/build-sdk-mobile.sh`), copied into the APK when `NEXUS_SDK_SO` points at it. The server
+  loads it at run time; without it the tab says the SDK is missing.
+- **Invite**: paste the invite file, load it, or have it pushed with `POST /api/nexus/offer` (over
+  remote care). The tab shows network, server, expiry and grants; nothing joins until Join is pressed.
+  The invite is single-use, kept 0600 until the join, and never returned by any route.
+- **Address map**: a phone that reaches LAN-only servers over Tailscale needs an invite with
+  `address_map` (advertised name or LAN address -> tailnet address) and an SDK with
+  `ln_set_address_map`.
+- **Network change**: the app posts `/api/nexus/network` when the phone moves between Wi-Fi and
+  cellular; the SDK opens a new socket and handshakes on the new path (no rejoin).
+- **Mesh route for models**: a `providers.json` entry with `"nexus": {"peer", "port", "path"}` is
+  reached through the mesh when joined and skipped with the reason otherwise; keep the tailnet entry
+  after it as the fallback.
+- Test: `e2e/nexus-check.mjs --invite FILE [--leave] [--shots DIR]` presses Check invite, Join and Leave.
+
 ## Remote care
 
 Remote care lets the home fleet reach the phone over Tailscale when adb cannot (Samsung turns

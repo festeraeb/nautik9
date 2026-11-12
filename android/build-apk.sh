@@ -13,11 +13,11 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/.." && pwd)
 : "${ANDROID_HOME:?set ANDROID_HOME}"
 : "${LLAMA_SERVER:?set LLAMA_SERVER to an Android arm64 llama-server}"
-VERSION_NAME=${VERSION_NAME:-0.9.0}
+VERSION_NAME=${VERSION_NAME:-0.10.0}
 # DEBUGGABLE=1 (default for now): adb run-as and WebView DevTools over adb, for working on the
 # app live over wireless debugging. Set DEBUGGABLE=0 for a build you hand to someone else.
 DEBUGGABLE=${DEBUGGABLE:-1}
-VERSION_CODE=${VERSION_CODE:-54}
+VERSION_CODE=${VERSION_CODE:-55}
 NDK=$ANDROID_HOME/ndk/27.2.12479018
 TC=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin
 BT=$ANDROID_HOME/build-tools/35.0.0
@@ -55,6 +55,13 @@ javac -source 17 -target 17 -Xlint:-options -encoding UTF-8 -classpath "$JAR" -d
 # 4. Native executables, shipped as lib*.so so Android installs them executable
 "$TC/llvm-strip" -o "$out/native/lib/arm64-v8a/libnautik9.so" "$server"
 "$TC/llvm-strip" -o "$out/native/lib/arm64-v8a/libllama_server.so" "$LLAMA_SERVER"
+# Lemonade Nexus SDK for the Nexus tab (lemonade-nexus scripts/build-sdk-mobile.sh, android-arm64-v8a);
+# loaded by the server at run time from this folder. Without it the Nexus tab says the SDK is missing.
+if [ -n "${NEXUS_SDK_SO:-}" ]; then
+    cp "$NEXUS_SDK_SO" "$out/native/lib/arm64-v8a/liblemonade_nexus_sdk.so"
+else
+    echo "NEXUS_SDK_SO not set: building without the Nexus SDK"
+fi
 
 cp "$out/base.apk" "$out/unsigned.apk"
 (cd "$out/dex" && zip -q "$out/unsigned.apk" classes.dex)

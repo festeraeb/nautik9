@@ -1,0 +1,12 @@
+[package]
+name = "nexus-join"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Join, show and leave a Lemonade Nexus network from an app, over the Nexus SDK C API (loaded at run time)"
+
+[dependencies]
+libloading = "0.9"
+serde_json = "1.0"
+
+[dev-dependencies]

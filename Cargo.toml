@@ -8,6 +8,7 @@ members = [
     "crates/nautik9-bridges",
     "crates/nautik9-webxdc",
     "crates/nautik9-app",
+    "crates/nexus-join",
 ]
 resolver = "2"
 

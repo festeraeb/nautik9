@@ -100,17 +100,25 @@ pub fn local_model_idle_seconds() -> Option<u64> {
 
 /// Providers to try for this request: `offline_only` keeps only local ones; when the device
 /// is offline, remote ones are listed in `skipped` instead of being tried.
-fn plan_chain<'a>(providers: &'a [Provider], offline_only: bool) -> (Vec<&'a Provider>, Vec<String>) {
+fn plan_chain(providers: &[Provider], offline_only: bool) -> (Vec<Provider>, Vec<String>) {
     let online = is_online();
     let mut chain = Vec::new();
     let mut skipped = Vec::new();
     for p in providers.iter().filter(|p| !offline_only || p.offline) {
+        if let Some(route) = &p.nexus {
+            // Reached through the Nexus mesh: the resolver gives a loopback URL, or why not.
+            match MESH_RESOLVER.get().ok_or_else(|| "Nexus is not available in this build".to_string()).and_then(|f| f(route)) {
+                Ok(url) => chain.push(Provider { base_url: url, nexus: None, name: format!("{} (Nexus)", p.name), ..p.clone() }),
+                Err(why) => skipped.push(format!("{} (Nexus peer {}): skipped, {}", p.name, route.peer, why)),
+            }
+            continue;
+        }
         if !p.offline && !online {
             skipped.push(format!("{} ({}): skipped, the phone is offline", p.name, p.base_url));
         } else if !p.offline && !is_tailscale() && is_tailnet_url(&p.base_url) {
             skipped.push(format!("{} ({}): skipped, {}", p.name, p.base_url, HOME_UNREACHABLE_MESSAGE));
         } else {
-            chain.push(p);
+            chain.push(p.clone());
         }
     }
     (chain, skipped)
@@ -144,6 +152,29 @@ pub struct Provider {
     /// Never printed by `/api/providers`.
     #[serde(default)]
     pub headers: Option<std::collections::BTreeMap<String, String>>,
+    /// Reach this endpoint through the Lemonade Nexus mesh instead of `base_url`:
+    /// `{"peer": "<device name on the Nexus>", "port": <service port>, "path": "/v1"}`.
+    /// Skipped (with the reason in the attempts) when the app is not on the Nexus; keep the
+    /// tailnet entry after it as the fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nexus: Option<NexusRoute>,
+}
+
+/// A provider reached through the Nexus mesh (see `Provider::nexus`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NexusRoute {
+    pub peer: String,
+    pub port: u16,
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+type MeshResolver = fn(&NexusRoute) -> Result<String, String>;
+static MESH_RESOLVER: std::sync::OnceLock<MeshResolver> = std::sync::OnceLock::new();
+
+/// Installed by the app when the Nexus module is present: maps a route to a loopback base URL.
+pub fn set_mesh_resolver(f: MeshResolver) {
+    let _ = MESH_RESOLVER.set(f);
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,6 +196,7 @@ impl Default for LemonadeConfig {
                     api_key: None,
                     offline: false,
                     headers: None,
+                    nexus: None,
                 },
             ],
             timeout_seconds: 60,
@@ -409,7 +441,7 @@ impl LemonadeModule {
                 attempts,
             });
         }
-        for p in chain {
+        for p in &chain {
             if p.offline {
                 note_local_model_use();
             } else if is_tailnet_url(&p.base_url) && !tailnet_reachable(&p.base_url).await {
@@ -451,7 +483,7 @@ impl LemonadeModule {
             let error = if attempts.is_empty() { "no model endpoint is configured" } else { "the phone is offline and no on-device model is configured" };
             return Err(ChatFailure { error: error.to_string(), attempts });
         }
-        for p in chain {
+        for p in &chain {
             if p.offline {
                 note_local_model_use();
             } else if is_tailnet_url(&p.base_url) && !tcp_reachable(&p.base_url, Duration::from_secs(2)).await {
@@ -677,8 +709,8 @@ mod tests {
     fn dead_config() -> LemonadeConfig {
         LemonadeConfig {
             providers: vec![
-                Provider { name: "a".into(), base_url: "http://127.0.0.1:1/v1".into(), model: None, api_key: None, offline: false, headers: None },
-                Provider { name: "b".into(), base_url: "http://127.0.0.1:2/v1".into(), model: Some("x".into()), api_key: None, offline: false, headers: None },
+                Provider { name: "a".into(), base_url: "http://127.0.0.1:1/v1".into(), model: None, api_key: None, offline: false, headers: None, nexus: None },
+                Provider { name: "b".into(), base_url: "http://127.0.0.1:2/v1".into(), model: Some("x".into()), api_key: None, offline: false, headers: None, nexus: None },
             ],
             timeout_seconds: 2,
             max_tokens: 50,
@@ -726,7 +758,7 @@ mod tests {
     async fn answer_is_labelled_with_returned_model_and_endpoint() {
         let url = mock_server().await;
         let mut cfg = dead_config();
-        cfg.providers.push(Provider { name: "mock".into(), base_url: url.clone(), model: None, api_key: None, offline: false, headers: None });
+        cfg.providers.push(Provider { name: "mock".into(), base_url: url.clone(), model: None, api_key: None, offline: false, headers: None, nexus: None });
         let m = LemonadeModule::new(cfg);
         let a = m.chat("hi", None, false).await.unwrap();
         assert_eq!(a.reply, "hello from mock");
@@ -770,7 +802,7 @@ mod tests {
         h.insert("HTTP-Referer".to_string(), "https://example.invalid/app".to_string());
         h.insert("X-Title".to_string(), "NautiK9".to_string());
         let cfg = LemonadeConfig {
-            providers: vec![Provider { name: "openrouter".into(), base_url: format!("http://127.0.0.1:{port}/v1"), model: Some("anthropic/x".into()), api_key: Some("k-test".into()), offline: false, headers: Some(h) }],
+            providers: vec![Provider { name: "openrouter".into(), base_url: format!("http://127.0.0.1:{port}/v1"), model: Some("anthropic/x".into()), api_key: Some("k-test".into()), offline: false, headers: Some(h), nexus: None }],
             timeout_seconds: 5,
             max_tokens: 16,
         };
@@ -785,7 +817,7 @@ mod tests {
     async fn offline_flag_uses_only_offline_entries() {
         let url = mock_server().await;
         let mut cfg = dead_config();
-        cfg.providers.push(Provider { name: "local".into(), base_url: url, model: Some("m".into()), api_key: None, offline: true, headers: None });
+        cfg.providers.push(Provider { name: "local".into(), base_url: url, model: Some("m".into()), api_key: None, offline: true, headers: None, nexus: None });
         let m = LemonadeModule::new(cfg);
         let a = m.chat("hi", None, true).await.unwrap();
         assert_eq!(a.provider, "local");

@@ -72,6 +72,7 @@ public class MainActivity extends Activity {
             private void push() {
                 String json = Bridge.networkJson(MainActivity.this);
                 runOnUiThread(() -> { if (web != null) web.evaluateJavascript("window.n9OnNetwork&&window.n9OnNetwork(" + json + ")", null); });
+                nexusNetwork(json);
             }
             @Override public void onAvailable(android.net.Network n) { push(); }
             @Override public void onLost(android.net.Network n) { push(); }
@@ -94,6 +95,34 @@ public class MainActivity extends Activity {
         } catch (RuntimeException e) {
             netWatch = null;
         }
+    }
+
+    /** Nexus: when the phone moves between networks (Wi-Fi, cellular), tell the server so the tunnel gets a new
+     *  socket and handshake on the new path (POST /api/nexus/network); no rejoin. */
+    private String nexusLastNet = "";
+    private void nexusNetwork(String networkJson) {
+        String t;
+        try { t = new org.json.JSONObject(networkJson).optString("transport", "none"); } catch (Exception e) { return; }
+        if (t.equals(nexusLastNet)) return;
+        boolean first = nexusLastNet.isEmpty();
+        nexusLastNet = t;
+        if (first || t.equals("none")) return;
+        final String what = t;
+        new Thread(() -> {
+            try {
+                java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL("http://127.0.0.1:" + Engines.SERVER_PORT + "/api/nexus/network").openConnection();
+                c.setRequestMethod("POST");
+                c.setRequestProperty("Authorization", "Bearer " + Engines.get(MainActivity.this).token());
+                c.setRequestProperty("Content-Type", "application/json");
+                c.setConnectTimeout(1000);
+                c.setReadTimeout(3000);
+                c.setDoOutput(true);
+                c.getOutputStream().write(("{\"what\":\"" + what + "\"}").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                c.getResponseCode();
+                c.disconnect();
+            } catch (Exception ignored) {
+            }
+        }, "nexus-net").start();
     }
 
     @Override

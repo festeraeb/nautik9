@@ -985,6 +985,7 @@
             <button class="tab-btn" onclick="switchTab('board', this)">&#129309; Board</button>
             <button class="tab-btn" onclick="switchTab('godseye', this)">&#127757; God's Eye</button>
             <button class="tab-btn" onclick="switchTab('apps', this)">&#129513; Apps</button>
+            <button class="tab-btn" id="tabNexus" onclick="switchTab('nexus', this)">&#128279; Nexus</button>
             <button class="tab-btn" onclick="switchTab('settings', this)">&#127912; Settings</button>
         </nav>
     </div>
@@ -1416,6 +1417,13 @@
     </section>
 
     <!-- Settings: themes, voice, motion -->
+    <section id="pane-nexus" class="section-pane">
+        <div class="card">
+            <div class="card-header"><span class="card-title">&#128279; Nexus</span></div>
+            <div id="nexusPanel"></div>
+        </div>
+    </section>
+
     <section id="pane-settings" class="section-pane">
         <div class="card">
             <div class="card-header"><span class="card-title">&#127912; Theme</span></div>
@@ -1728,6 +1736,7 @@
             if (tabId === 'fleet') loadFleetTelemetry();
             if (tabId === 'auto') loadAuto();
             if (tabId === 'apps' && window.n9AppsOpen) n9AppsOpen();
+            if (tabId === 'nexus' && window.nxOpen) nxOpen();
             if (window.n9PollSet) n9PollSet(tabId);
             if (window.geTab) geTab(tabId);
             if (tabId === 'settings' && window.rcLoad) rcLoad();
@@ -2513,6 +2522,29 @@
         renderOfflineModel();
     </script>
     <script src="/static/notes-plus.js"></script>
+    <script src="/static/nexus-panel.js"></script>
+    <script>
+        // ---- Nexus (nexus_api.rs + static/nexus-panel.js, shared with Jade) ----
+        async function nxJson(url, init) {
+            try {
+                const r = await fetch(url, init); const j = await r.json().catch(() => ({}));
+                if (!r.ok && j.ok !== false) return { ok: false, error: j.error || ('HTTP ' + r.status) };
+                return j;
+            } catch (e) { return { ok: false, error: String(e) }; }
+        }
+        const nxPost = (url, body) => nxJson(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+        let nxPanel = null;
+        function nxOpen() {
+            if (nxPanel) { nxPanel.refresh(); return; }
+            nxPanel = NexusPanel.mount(document.getElementById('nexusPanel'), {
+                status: () => nxJson('/api/nexus/status'),
+                offer: (text) => nxJson('/api/nexus/offer', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: text }),
+                discard: () => nxJson('/api/nexus/offer', { method: 'DELETE' }),
+                join: (name) => nxPost('/api/nexus/join', name ? { device_name: name } : {}),
+                leave: (force) => nxPost('/api/nexus/leave', { force: !!force }),
+            }, {});
+        }
+    </script>
     <script>
         // ---- Voice (speak a reply), avatar talking state, mini apps ----
         // Server voice first (POST /api/agent/tts); if none is configured or it fails, the

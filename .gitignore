@@ -12,3 +12,7 @@ serve.log
 # Android build output (signing keys live in ~/.config/nautik9-android, never here)
 android/build/
 *.jks
+
+# Lemonade Nexus: the SDK is copied in at build time; invites are single-use secrets
+liblemonade_nexus_sdk.so
+*invite*.json

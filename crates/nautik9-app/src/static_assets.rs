@@ -19,6 +19,7 @@ static ASSETS: &[Asset] = &[
     ("katex/katex.min.css", "text/css; charset=utf-8", include_bytes!("../static/katex/katex.min.css")),
     ("themes.css", "text/css; charset=utf-8", include_bytes!("../static/themes.css")),
     ("themes.js", "text/javascript; charset=utf-8", include_bytes!("../static/themes.js")),
+    ("nexus-panel.js", "text/javascript; charset=utf-8", include_bytes!("../static/nexus-panel.js")),
     ("apps/wayfinder/index.html", "text/html; charset=utf-8", include_bytes!("../apps/wayfinder/index.html")),
     ("apps/wayfinder/n9-shim.js", "text/javascript; charset=utf-8", include_bytes!("../apps/wayfinder/n9-shim.js")),
     ("apps/wayfinder/assets/index-BKQ3o2zA.js", "text/javascript; charset=utf-8", include_bytes!("../apps/wayfinder/assets/index-BKQ3o2zA.js")),

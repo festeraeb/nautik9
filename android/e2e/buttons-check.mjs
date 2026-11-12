@@ -165,6 +165,13 @@ await tab('godseye');
 await page.waitForTimeout(6000);
 const geUi = await page.evaluate(() => ({ decision: document.getElementById('geDecision').innerText, track: document.getElementById('geTrack').checked }));
 check('God\'s Eye tab shows a decision and tracking is off', /Chosen|Mode set/.test(geUi.decision) && geUi.track === false, JSON.stringify(geUi));
+
+// Nexus: read-only here (join and leave are pressed by e2e/nexus-check.mjs with a real invite).
+await tab('nexus');
+await page.waitForTimeout(2000);
+const nx = await page.evaluate(async () => ({ s: await (await fetch('/api/nexus/status')).json(), ui: document.getElementById('nexusPanel').innerText }));
+check('Nexus tab: SDK in the app', nx.s.sdk && nx.s.sdk.loaded, nx.s.sdk && (nx.s.sdk.path || nx.s.sdk.error));
+check('Nexus tab: state shown, peers only from the SDK', /Joined|Not joined|Invite ready|Joining/.test(nx.ui) && (nx.s.joined || (nx.s.peers || []).length === 0), `${nx.s.state}, ${(nx.s.peers || []).length} peers${nx.s.stale ? ', stale: ' + nx.s.stale_reason : ''}`);
 await tab('helm');
 
 check('no page errors', errors.length === 0, errors.join(' | '));

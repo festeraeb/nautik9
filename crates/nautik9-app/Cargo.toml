@@ -14,6 +14,7 @@ nautik9-fleet = { path = "../nautik9-fleet" }
 nautik9-agent = { path = "../nautik9-agent" }
 nautik9-bridges = { path = "../nautik9-bridges" }
 nautik9-webxdc = { path = "../nautik9-webxdc" }
+nexus-join = { path = "../nexus-join" }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
