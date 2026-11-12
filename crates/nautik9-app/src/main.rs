@@ -859,6 +859,11 @@ async fn handle_sms_incoming(
     }))
 }
 
+/// Texts read from the phone or posted to /api/sms/incoming have ids "sms-..."; messenger bridge entries do not.
+fn is_sms_id(id: &str) -> bool {
+    id.starts_with("sms-")
+}
+
 async fn handle_sms_action(
     axum::extract::State(state): axum::extract::State<AppState>,
     axum::Json(payload): axum::Json<serde_json::Value>,
@@ -879,6 +884,11 @@ async fn handle_sms_action(
                 msg.draft_reply = Some(ed);
             }
             match action {
+                // A messenger bridge entry (id "discord-...", "vector-...") is not a text message: its sender
+                // is "discord:<id> (name)", and the SMS composer would get just the digits of that id.
+                "approve" if !is_sms_id(&msg.id) => {
+                    dispatch_result = Some("Error: this message came from a messenger, not SMS. The phone's SMS composer cannot reply to it; copy the draft and answer it there.".to_string());
+                }
                 "approve" => {
                     msg.status = SmsStatus::Approved;
                     match msg.draft_reply.clone().filter(|d| !d.trim().is_empty()) {
@@ -1209,12 +1219,16 @@ mod tests {
     }
 
     fn app_with_bridge(dir: &std::path::Path, sms_bridge: SmsBridge) -> axum::Router {
+        app_seeded(dir, sms_bridge, Vec::new())
+    }
+
+    fn app_seeded(dir: &std::path::Path, sms_bridge: SmsBridge, seed: Vec<SmsMessage>) -> axum::Router {
         let hw = HardwareProfile::detect_or_scaffold(Some("s25ultra"));
         let state = AppState {
             registry: std::sync::Arc::new(tokio::sync::Mutex::new(ModuleRegistry::new(hw.clone()))),
             hardware: std::sync::Arc::new(hw),
             vault_path: dir.join("vault.db"),
-            sms_messages: Default::default(),
+            sms_messages: std::sync::Arc::new(tokio::sync::RwLock::new(seed)),
             work_config: Default::default(),
             lemonade: std::sync::Arc::new(dead_lemonade()),
             fleet_url: "http://127.0.0.1:1".into(),
@@ -1639,6 +1653,20 @@ mod tests {
         // "opened" does nothing for a message that was not approved.
         let (_, v) = call(&a, "POST", "/api/sms/action", Some(TOKEN), Some(serde_json::json!({"id":"sms-42","action":"opened"}))).await;
         assert_eq!(v["message"]["status"], "NoModel");
+    }
+
+    #[tokio::test]
+    async fn a_messenger_draft_cannot_be_approved_into_the_sms_composer() {
+        let d = tempfile::tempdir().unwrap();
+        let m = |id: &str, sender: &str| SmsMessage { id: id.into(), sender: sender.into(), body: "hi".into(), timestamp: "10:00 AM".into(), draft_reply: Some("hello back".into()), draft_error: None, status: SmsStatus::Drafted, reply_model: None, latency_ms: None };
+        let a = app_seeded(d.path(), SmsBridge::App, vec![m("discord-ab12cd34", "discord:123456 (sam)"), m("sms-ab12cd34", "+15550002222")]);
+        let (_, v) = call(&a, "POST", "/api/sms/action", Some(TOKEN), Some(serde_json::json!({"id":"discord-ab12cd34","action":"approve"}))).await;
+        assert!(v["composer"].is_null(), "no SMS composer for a messenger message: {v}");
+        assert_eq!(v["message"]["status"], "Drafted", "{v}");
+        assert!(v["dispatch_result"].as_str().unwrap().contains("not SMS"), "{v}");
+        // a real text still gets its composer
+        let (_, v) = call(&a, "POST", "/api/sms/action", Some(TOKEN), Some(serde_json::json!({"id":"sms-ab12cd34","action":"approve"}))).await;
+        assert_eq!(v["composer"]["to"], "+15550002222");
     }
 
     #[tokio::test]
