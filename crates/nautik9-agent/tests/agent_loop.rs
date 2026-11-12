@@ -97,6 +97,27 @@ async fn a_model_that_never_stops_is_cut_off_honestly() {
 }
 
 #[tokio::test]
+async fn the_step_cap_note_is_a_system_prompt_not_a_saved_user_message() {
+    let seen = Arc::new(Mutex::new(vec![]));
+    let base = mock(
+        Arc::new(|_req: &Value| json!({"role":"assistant","content":"","tool_calls":[{"id":"x","type":"function","function":{"name":"list","arguments":"{}"}}]})),
+        seen.clone(),
+    )
+    .await;
+    let store = Store::in_memory().unwrap();
+    let a = agent(&base, Arc::new(WayfinderVault::in_memory().unwrap()), store.clone(), AgentConfig { max_steps: 3, ..Default::default() });
+    let r = a.turn(None, "loop forever", true).await.unwrap();
+    let stored = store.messages(&r.session_id).await.unwrap();
+    let users: Vec<_> = stored.iter().filter(|m| m.message["role"] == "user").collect();
+    assert_eq!(users.len(), 1, "only the real request is stored as a user message: {users:?}");
+    let reqs = seen.lock().unwrap().clone();
+    let last = reqs.last().unwrap();
+    assert!(last["messages"][0]["content"].as_str().unwrap().contains("Tool steps are used up"));
+    assert!(last["messages"].as_array().unwrap().iter().skip(1).all(|m| !m["content"].as_str().unwrap_or("").contains("Tool steps are used up")));
+    assert!(!reqs[0]["messages"][0]["content"].as_str().unwrap().contains("Tool steps are used up"));
+}
+
+#[tokio::test]
 async fn bad_tool_arguments_and_unknown_tools_go_back_as_errors() {
     let seen = Arc::new(Mutex::new(vec![]));
     let base = mock(
