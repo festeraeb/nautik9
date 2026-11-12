@@ -2,3 +2,6 @@ NautiK9 follows the design and intent of Jade Vault (MIT licence, v2.16.1):
 owner/other separation, bearer-token API on a trusted LAN, any OpenAI-compatible provider with a
 configurable fallback chain, honest model errors, markdown notes with [[links]], backlinks and #tags.
 NautiK9 is a Rust rewrite; no Jade Vault source code is copied.
+
+Vendored: KaTeX 0.16.11 (MIT licence, Khan Academy and other contributors) under
+crates/nautik9-app/static/katex/, with its LICENSE file, for offline math in the note preview.

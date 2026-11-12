@@ -1,0 +1,4 @@
+Wayfinder web build (Apache-2.0, same author as NautiK9).
+Built with `vite build --base ./` from the Wayfinder source at commit 8b10eda; n9-shim.js is NautiK9's
+host adapter (replaces the Tauri bridge). index.html differs from Wayfinder's dist only by relative asset
+paths and the shim script tag.

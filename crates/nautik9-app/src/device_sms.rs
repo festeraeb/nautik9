@@ -108,6 +108,8 @@ pub fn parse_adb_sms_rows(text: &str, limit: usize) -> Vec<SmsMessage> {
             status: SmsStatus::Pending,
             reply_model: None,
             latency_ms: None,
+            transport: None,
+            channel: None,
         });
     }
 

@@ -1,0 +1,17 @@
+[package]
+name = "nautik9-webxdc"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Webxdc mini apps for NautiK9: safe .xdc (zip) install, file store and update log in SQLite"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
+chrono = { workspace = true }
+sha2 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
