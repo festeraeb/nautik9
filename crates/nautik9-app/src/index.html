@@ -998,6 +998,8 @@
             <button class="tab-btn" onclick="switchTab('fleet', this)">🚀 Fleet Deck</button>
             <button class="tab-btn" onclick="switchTab('lemonade', this)">💬 Chat</button>
             <button class="tab-btn" onclick="switchTab('auto', this)">&#9881; Automations</button>
+            <button class="tab-btn" onclick="switchTab('buzz', this)">&#128276; Buzz</button>
+            <button class="tab-btn" onclick="switchTab('board', this)">&#129309; Board</button>
             <button class="tab-btn" onclick="switchTab('apps', this)">&#129513; Apps</button>
             <button class="tab-btn" onclick="switchTab('settings', this)">&#127912; Settings</button>
         </nav>
@@ -1332,6 +1334,54 @@
         <div class="card"><div class="card-header"><span class="card-title">Result</span></div><pre id="auOut">Nothing yet.</pre></div>
     </section>
 
+    <!-- Buzz: the fleet's shared message board (read and write through this server) -->
+    <section id="pane-buzz" class="section-pane">
+        <div class="card" id="bzOpenQ" style="display:none">
+            <div class="card-header"><span class="card-title">&#10067; Waiting for you</span></div>
+            <div id="bzQList" style="font-size:0.85rem"></div>
+        </div>
+        <div class="card">
+            <div class="card-header"><span class="card-title">&#128276; Buzz rooms</span><button class="btn-primary" style="padding:4px 10px;font-size:0.75rem" onclick="bzRefresh(true)">Refresh</button></div>
+            <div id="bzStatus" style="font-size:0.78rem;color:var(--text-sub);margin-bottom:6px"></div>
+            <div id="bzRooms" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+        </div>
+        <div class="card">
+            <div class="card-header"><span class="card-title" id="bzRoomTitle">Room</span></div>
+            <div id="bzStream" class="chat-stream" style="max-height:52vh;overflow-y:auto"></div>
+            <div id="bzReplyNote" style="font-size:0.75rem;color:var(--brass);margin-top:6px"></div>
+            <div class="input-group">
+                <textarea id="bzInput" rows="2" placeholder="Write to this room..." style="flex:1"></textarea>
+            </div>
+            <div class="n9-set-row">
+                <select id="bzKind"><option value="">note</option><option value="question">question</option><option value="status">status</option></select>
+                <button class="btn-primary" onclick="bzSend()">Send as <span id="bzSender">Thom</span></button>
+                <button class="btn-mini" onclick="bzReplyTo(null)">Clear reply</button>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-header"><span class="card-title">&#128203; Tasks</span></div>
+            <div id="bzTasks" style="font-size:0.85rem">Open this tab to load.</div>
+        </div>
+    </section>
+
+    <!-- Board: the Lemonade #1221 shared page (private; key kept on the server side) -->
+    <section id="pane-board" class="section-pane">
+        <div class="card">
+            <div class="card-header"><span class="card-title" id="bdTitle">&#129309; Board</span><button class="btn-primary" style="padding:4px 10px;font-size:0.75rem" onclick="bdRefresh()">Refresh</button></div>
+            <div id="bdSub" style="font-size:0.82rem;color:var(--text-sub)"></div>
+            <div id="bdMsg" style="font-size:0.82rem;color:var(--rose);margin:6px 0"></div>
+            <div id="bdFeatures"></div>
+        </div>
+        <div class="card"><div class="card-header"><span class="card-title">Build log</span></div><div id="bdLog" style="font-size:0.82rem"></div></div>
+        <div class="card"><div class="card-header"><span class="card-title">Tests</span></div><div id="bdTests" style="font-size:0.82rem"></div></div>
+        <div class="card">
+            <div class="card-header"><span class="card-title">Notes</span></div>
+            <div id="bdNotes" class="chat-stream" style="max-height:48vh;overflow-y:auto"></div>
+            <div class="input-group"><textarea id="bdInput" rows="2" placeholder="Leave a note..." style="flex:1"></textarea></div>
+            <div class="n9-set-row"><button class="btn-primary" onclick="bdSend()">Post as <span id="bdSender">Thom</span></button><span id="bdSendMsg"></span></div>
+        </div>
+    </section>
+
     <!-- Apps: built-in web apps (Wayfinder) and sandboxed .xdc mini apps -->
     <section id="pane-apps" class="section-pane">
         <div class="card" id="n9BuiltinApps">
@@ -1374,6 +1424,17 @@
             </div>
             <p style="font-size:0.78rem;color:var(--text-sub)">Plain talk makes replies short business prose; the pictures stay. The theme only changes the tone of a reply (sailing words on Great Lakes, a warm deadhead on Deadhead), never the facts or tools.</p>
         </div>
+        <div class="card">
+            <div class="card-header"><span class="card-title">&#128276; Buzz and Board</span></div>
+            <p style="font-size:0.78rem;color:var(--text-sub)">Buzz is reached over Tailscale only. Leave the address blank to use the home machine from the fleet address. The board key is typed once, saved on this device, and never shown again.</p>
+            <div class="input-group"><input type="text" id="setBuzzUrl" placeholder="Buzz address (blank = automatic)"></div>
+            <div id="setBuzzNow" style="font-size:0.75rem;color:var(--text-sub);margin-bottom:6px"></div>
+            <div class="input-group"><input type="text" id="setSender" placeholder="Name on your posts"></div>
+            <div class="input-group"><input type="text" id="setBoardUrl" placeholder="Board address"></div>
+            <div class="input-group"><input type="password" id="setBoardKey" autocomplete="off" placeholder="Board key (write only)"></div>
+            <div class="n9-set-row"><button class="btn-primary" onclick="bzSaveSettings()">Save</button><button class="btn-mini" onclick="bzClearKey()">Forget the key</button><span id="setBuzzMsg"></span></div>
+        </div>
+
     </section>
 
     <script src="/static/themes.js"></script>
@@ -1538,8 +1599,9 @@
             updateNetNote();
             const body = { online: !!n.online };
             if (typeof n.tailscale === 'boolean') body.tailscale = n.tailscale;
-            fetch('/api/net', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => {});
+            const posted = fetch('/api/net', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => {});
             if (typeof renderOfflineModel === 'function') renderOfflineModel();
+            return posted;
         }
         // Home endpoints on the tailnet (100.64.0.0/10) need Tailscale on the phone; say so plainly.
         let providerUrls = [];
@@ -1557,12 +1619,17 @@
             note.innerText = '';
         }
         window.n9OnNetwork = applyNet;
+        // Returns a promise that settles once the server has the new state, so a request that follows
+        // (Buzz, Fleet Deck) never races the update. Turning Tailscale on or off fires no 'online' event,
+        // so the state is also re-read every 20 s while the page is visible and when it comes back.
         function readNet() {
             const r = bridgeCall('network');
-            applyNet(r || { online: navigator.onLine !== false, transport: 'browser', metered: false });
+            return applyNet(r || { online: navigator.onLine !== false, transport: 'browser', metered: false });
         }
         window.addEventListener('online', readNet);
         window.addEventListener('offline', readNet);
+        document.addEventListener('visibilitychange', () => { if (!document.hidden) readNet(); });
+        setInterval(() => { if (!document.hidden) readNet(); }, 20000);
 
         // Wake the on-device model (stopped after 10 idle minutes) and wait until it answers.
         async function wakeModel(onStatus) {
@@ -1645,6 +1712,7 @@
             if (tabId === 'fleet') loadFleetTelemetry();
             if (tabId === 'auto') loadAuto();
             if (tabId === 'apps' && window.n9AppsOpen) n9AppsOpen();
+            if (window.n9PollSet) n9PollSet(tabId);
         }
 
         function selectTier(card, tierName, engine) {
@@ -2160,6 +2228,7 @@
 
         // Fleet Telemetry (All 6 Nodes & 16 GPUs)
         async function loadFleetTelemetry() {
+            await readNet();
             const src = document.getElementById('fleetSource');
             const grid = document.getElementById('fleetNodesGrid');
             try {
@@ -2605,6 +2674,151 @@
             const j = await r.json().catch(() => ({}));
             document.getElementById('kgOut').innerText = r.ok ? 'Rules saved.' : 'Not saved: ' + (j.error || r.status);
         }
+
+        // ---- Buzz tab and Board tab (through this server; see buzz_api.rs) ----
+        let bzRoom = 'ops', bzReply = null, bzPollTimer = null, bzSender = 'Thom', bzMsgs = [];
+        const bzFmt = ms => { const n = Number(ms); if (!n) return ''; const d = new Date(n > 1e12 ? n : n * 1000); return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); };
+        async function bzJson(url, init) {
+            try {
+                const r = await fetch(url, init); const j = await r.json().catch(() => ({}));
+                return r.ok ? j : { error: j.error || ('HTTP ' + r.status), kind: j.kind || 'error' };
+            } catch (e) { return { error: String(e), kind: 'error' }; }
+        }
+        function bzNote(msg) { const b = document.getElementById('bzStatus'); if (b) b.innerText = msg || ''; }
+        async function bzSettingsLoad() {
+            const s = await bzJson('/api/buzz/settings'); if (s.error) return;
+            bzSender = s.sender; document.getElementById('bzSender').innerText = s.sender; document.getElementById('bdSender').innerText = s.sender;
+            document.getElementById('setSender').value = s.sender; document.getElementById('setBoardUrl').value = s.board_url;
+            document.getElementById('setBuzzNow').innerText = 'Using: ' + (s.buzz_url || 'nothing configured') + ' (' + s.buzz_url_source + ')';
+            document.getElementById('setBoardKey').placeholder = s.has_board_key ? 'Board key saved (hidden). Type to replace.' : 'Board key (write only)';
+        }
+        async function bzSaveSettings() {
+            const body = { sender: document.getElementById('setSender').value, board_url: document.getElementById('setBoardUrl').value };
+            const u = document.getElementById('setBuzzUrl').value.trim(); if (u || document.getElementById('setBuzzUrl').dataset.touched) body.buzz_url = u;
+            const k = document.getElementById('setBoardKey').value; if (k) body.board_key = k;
+            const j = await bzJson('/api/buzz/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+            document.getElementById('setBoardKey').value = '';
+            document.getElementById('setBuzzMsg').innerText = j.error ? 'Not saved: ' + j.error : 'Saved.';
+            bzSettingsLoad();
+        }
+        async function bzClearKey() {
+            await bzJson('/api/buzz/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ board_key: '' }) });
+            document.getElementById('setBuzzMsg').innerText = 'Key forgotten.'; bzSettingsLoad();
+        }
+        document.addEventListener('DOMContentLoaded', () => { const e = document.getElementById('setBuzzUrl'); if (e) e.addEventListener('input', () => { e.dataset.touched = '1'; }); });
+        function bzReplyTo(m) {
+            bzReply = m ? m.id : null;
+            document.getElementById('bzReplyNote').innerText = m ? ('Replying to ' + m.sender + ': ' + (m.body || '').slice(0, 60)) : '';
+            if (m && m.kind === 'question') document.getElementById('bzKind').value = '';
+        }
+        function bzRenderMsgs() {
+            const box = document.getElementById('bzStream'); const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+            const byId = {}; bzMsgs.forEach(m => byId[m.id] = m);
+            box.innerHTML = bzMsgs.length ? '' : 'Nothing in this room yet.';
+            bzMsgs.forEach(m => {
+                const d = document.createElement('div'); d.className = 'msg-bubble ' + (String(m.sender).toLowerCase() === bzSender.toLowerCase() ? 'msg-user' : 'msg-mack');
+                const parent = m.reply_to && byId[m.reply_to];
+                if (m.reply_to) d.style.marginLeft = '18px';
+                if (m.kind === 'question') d.style.outline = '2px solid var(--brass)';
+                d.innerHTML = '<div style="font-size:0.72rem;opacity:.9"><b>' + esc(m.sender) + '</b> &middot; ' + esc(bzFmt(m.created_at)) + (m.kind && m.kind !== 'note' ? ' &middot; <b style="color:var(--brass)">' + esc(m.kind) + '</b>' : '') + (m.reply_to ? ' &middot; &#8627; ' + esc(parent ? parent.sender : 'earlier message') : '') + '</div><div style="white-space:pre-wrap;word-break:break-word;margin-top:2px">' + esc(m.body) + '</div>';
+                const b = document.createElement('button'); b.className = 'btn-mini'; b.style.marginTop = '4px'; b.innerText = 'Reply'; b.onclick = () => { bzReplyTo(m); document.getElementById('bzInput').focus(); };
+                d.appendChild(b); box.appendChild(d);
+            });
+            if (atBottom) box.scrollTop = box.scrollHeight;
+        }
+        async function bzRefresh(force) {
+            await readNet();
+            const rooms = await bzJson('/api/buzz/rooms');
+            if (rooms.error) { bzNote(rooms.error); document.getElementById('bzRooms').innerHTML = ''; return; }
+            bzNote('');
+            const rb = document.getElementById('bzRooms'); rb.innerHTML = '';
+            rooms.rooms.forEach(r => {
+                const b = document.createElement('button'); b.className = 'action-pill' + (r.name === bzRoom ? ' on' : ''); b.title = r.purpose || '';
+                b.innerHTML = '<span>#' + esc(r.name) + (r.open_questions ? ' &#10067;' + r.open_questions : '') + '</span>';
+                b.onclick = () => { bzRoom = r.name; bzRefresh(true); }; rb.appendChild(b);
+            });
+            document.getElementById('bzRoomTitle').innerText = '#' + bzRoom;
+            const m = await bzJson('/api/buzz/messages?channel=' + encodeURIComponent(bzRoom) + '&limit=60');
+            if (!m.error) { bzMsgs = m.messages || []; bzRenderMsgs(); } else bzNote(m.error);
+            const q = await bzJson('/api/buzz/questions?room=human-questions');
+            const qb = document.getElementById('bzQList'), qc = document.getElementById('bzOpenQ');
+            if (!q.error && (q.questions || []).length) {
+                qc.style.display = ''; qb.innerHTML = '';
+                q.questions.forEach(x => {
+                    const d = document.createElement('div'); d.className = 'n9-app-row'; d.style.alignItems = 'flex-start';
+                    d.innerHTML = '<span style="white-space:normal"><b>' + esc(x.sender) + '</b> <small>' + esc(bzFmt(x.created_at)) + '</small><br>' + esc((x.body || '').slice(0, 300)) + '</span>';
+                    const b = document.createElement('button'); b.className = 'btn-mini'; b.innerText = 'Answer';
+                    b.onclick = () => { bzRoom = 'human-questions'; bzReply = x.id; bzRefresh(true).then(() => { bzReplyTo(x); document.getElementById('bzInput').focus(); }); };
+                    d.appendChild(b); qb.appendChild(d);
+                });
+            } else qc.style.display = 'none';
+            bzTasksLoad();
+        }
+        async function bzTasksLoad() {
+            const box = document.getElementById('bzTasks');
+            const t = await bzJson('/api/buzz/tasks');
+            if (t.error) { box.innerText = t.error; return; }
+            const order = ['queued', 'claimed', 'in_progress', 'needs_help', 'ready_for_review'];
+            const by = {}; (t.tasks || []).forEach(x => (by[x.state] = by[x.state] || []).push(x));
+            box.innerHTML = '';
+            order.forEach(st => {
+                const list = by[st] || []; if (!list.length) return;
+                const h = document.createElement('div'); h.style.cssText = 'font-weight:800;margin:8px 0 4px;color:var(--brass)'; h.innerText = st.replace(/_/g, ' ') + ' (' + list.length + ')'; box.appendChild(h);
+                list.forEach(x => {
+                    const d = document.createElement('div'); d.className = 'n9-app-row'; d.style.alignItems = 'flex-start';
+                    d.innerHTML = '<span style="white-space:normal"><b>' + esc(x.title) + '</b><br><small>' + esc(x.owner_agent || 'unowned') + ' &middot; #' + esc(x.channel || '') + '</small></span>';
+                    if (x.mine) { const b = document.createElement('button'); b.className = 'btn-mini'; b.innerText = 'Mark completed'; b.onclick = async () => { if (!confirm('Mark "' + x.title + '" completed?')) return; const j = await bzJson('/api/buzz/task/complete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task_id: x.task_id }) }); if (j.error) alert(j.error); bzTasksLoad(); }; d.appendChild(b); }
+                    box.appendChild(d);
+                });
+            });
+            if (!box.innerHTML) box.innerText = 'No open tasks.';
+        }
+        async function bzSend() {
+            const inp = document.getElementById('bzInput'); const text = inp.value.trim(); if (!text) return;
+            const body = { channel: bzRoom, body: text }; const k = document.getElementById('bzKind').value; if (k) body.kind = k; if (bzReply) body.reply_to = bzReply;
+            const j = await bzJson('/api/buzz/message', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+            if (j.error) { bzNote('Not sent: ' + j.error); return; }
+            inp.value = ''; bzReplyTo(null); bzRefresh(true);
+        }
+        // Board
+        async function bdRefresh() {
+            await readNet();
+            const msg = document.getElementById('bdMsg'); msg.innerText = '';
+            const st = await bzJson('/api/board/status');
+            if (st.error) { msg.innerText = st.kind === 'no_key' ? 'Enter the board key in Settings (it is typed once and kept on this device).' : st.error; return; }
+            document.getElementById('bdTitle').innerText = '\u{1F91D} ' + (st.title || 'Board');
+            document.getElementById('bdSub').innerText = (st.subtitle || '') + (st.updated ? ' (updated ' + st.updated + ')' : '');
+            const col = { built: ['#2fcf70', 'built'], mocked: ['#ff5a5a', 'mocked'], approved: ['#ffa53a', 'approved'] };
+            const f = document.getElementById('bdFeatures'); f.innerHTML = '';
+            (st.features || []).forEach(x => {
+                const c = col[x.state] || ['#94a3b8', x.state || '?']; const d = document.createElement('div'); d.className = 'n9-app-row'; d.style.alignItems = 'flex-start';
+                d.innerHTML = '<span style="white-space:normal"><b style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + c[0] + ';margin-right:6px"></b><b>' + esc(x.name) + '</b> <small style="border:1px solid ' + c[0] + ';border-radius:6px;padding:0 5px;color:' + c[0] + '">' + esc(c[1]) + '</small><br><small>' + esc(x.note || '') + '</small></span>'; f.appendChild(d);
+            });
+            document.getElementById('bdLog').innerHTML = (st.log || []).slice().reverse().map(l => '<div><small>' + esc(l.when) + '</small> ' + esc(l.what) + '</div>').join('') || 'No log yet.';
+            document.getElementById('bdTests').innerHTML = (st.tests || []).map(t => '<div><b>' + esc(t.name) + '</b>: ' + esc(t.result) + (t.detail ? ' <small>' + esc(t.detail) + '</small>' : '') + '</div>').join('') || 'No tests listed.';
+            const nj = await bzJson('/api/board/notes'); const nb = document.getElementById('bdNotes');
+            if (nj.error) { msg.innerText = nj.error; return; }
+            nb.innerHTML = (nj.notes || []).length ? '' : 'No notes yet.';
+            (nj.notes || []).forEach(n => { const d = document.createElement('div'); d.className = 'msg-bubble ' + (String(n.name).toLowerCase().startsWith(bzSender.toLowerCase()) ? 'msg-user' : 'msg-mack'); d.innerHTML = '<div style="font-size:0.72rem"><b>' + esc(n.name) + '</b> &middot; ' + esc(bzFmt(n.t)) + '</div><div style="white-space:pre-wrap;word-break:break-word">' + esc(n.text) + '</div>'; nb.appendChild(d); });
+            nb.scrollTop = nb.scrollHeight;
+        }
+        async function bdSend() {
+            const inp = document.getElementById('bdInput'); const text = inp.value.trim(); if (!text) return;
+            const j = await bzJson('/api/board/note', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+            document.getElementById('bdSendMsg').innerText = j.error ? 'Not posted: ' + j.error : 'Posted.';
+            if (!j.error) { inp.value = ''; bdRefresh(); }
+        }
+        // Gentle polling: every 15 s, only while the tab is showing and the page is visible. Nothing in the background.
+        function n9PollSet(tab) {
+            if (bzPollTimer) { clearInterval(bzPollTimer); bzPollTimer = null; }
+            const run = tab === 'buzz' ? bzRefresh : tab === 'board' ? bdRefresh : null;
+            if (tab === 'buzz' || tab === 'board') bzSettingsLoad();
+            if (!run) return;
+            run(true);
+            bzPollTimer = setInterval(() => { if (!document.hidden) run(); }, 15000);
+        }
+        document.addEventListener('visibilitychange', () => { if (document.hidden && bzPollTimer) { clearInterval(bzPollTimer); bzPollTimer = null; window.__n9PollResume = true; } else if (!document.hidden && window.__n9PollResume) { window.__n9PollResume = false; const a = document.querySelector('.section-pane.active'); if (a) n9PollSet(a.id.replace('pane-', '')); } });
+        bzSettingsLoad();
 
         // ---- Apps tab: built-in apps ----
         async function n9AppsOpen() {
