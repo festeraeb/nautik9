@@ -1026,8 +1026,11 @@ async fn handle_model_set(
 
 /// `GET /api/net`: what the server believes about connectivity, and how long the on-device
 /// model has been idle (the app stops it after a while to save battery).
-async fn handle_net_get() -> axum::Json<serde_json::Value> {
+async fn handle_net_get(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> axum::Json<serde_json::Value> {
     axum::Json(serde_json::json!({
+        "local_first": nautik9_lemonade::local_is_first_hop(&state.lemonade.config.providers),
         "online": nautik9_lemonade::is_online(),
         "tailscale": nautik9_lemonade::is_tailscale(),
         "local_model_idle_seconds": nautik9_lemonade::local_model_idle_seconds(),

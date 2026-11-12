@@ -1563,14 +1563,33 @@
             }
             return false;
         }
-        const localDown = d => JSON.stringify(d && (d.attempts || d.message && d.message.draft_error) || '').match(/on-device[^"]*(refused|unreachable)/);
+        const asleepErr = s => /on-device[^"]*(refused|unreachable)/.test(String(s || ''));
+        const localDown = d => asleepErr(JSON.stringify(d && (d.attempts || d.message && d.message.draft_error) || ''));
+        // Will the first endpoint a request tries be the on-device model? (offline phone, or it heads the chain)
+        async function localIsFirst() {
+            try { return !!(await (await fetch('/api/net')).json()).local_first; } catch (e) { return false; }
+        }
+        // An SMS draft that failed only because the on-device model was asleep: wake it and redo
+        // THAT draft (same message id), instead of posting the text again as a new inbox entry.
+        async function redraftIfAsleep(msg, onStatus) {
+            if (!msg || msg.status !== 'NoModel' || !asleepErr(msg.draft_error)) return msg;
+            if (!(await wakeModel(onStatus))) return msg;
+            if (onStatus) onStatus('Mack is working...');
+            try {
+                const r = await fetch('/api/sms/action', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: msg.id, action: 'regenerate' }) });
+                return (await r.json()).message || msg;
+            } catch (e) { return msg; }
+        }
         // A model request. Offline (or offline toggle): the on-device model is woken first. Online: the
         // chain runs as configured; if the on-device entry was asleep and nothing else answered, it is
-        // woken and the request sent once more.
-        async function modelFetch(url, init, onStatus, forceLocal) {
+        // woken and the request sent once more. `replay=false` is for requests that change state
+        // when posted (a chat turn, a new inbox entry, Retry): they are never sent twice, so the model
+        // is woken BEFORE the request whenever it is the first endpoint that will be tried.
+        async function modelFetch(url, init, onStatus, forceLocal, replay = true) {
             readNet(); // fresh online/Tailscale state before every model request (a VPN can drop without a network change)
-            if (forceLocal || !netState.online) await wakeModel(onStatus);
+            if (forceLocal || !netState.online || (!replay && await localIsFirst())) await wakeModel(onStatus);
             let res = await fetch(url, init);
+            if (!replay) return res;
             let data = null;
             try { data = await res.clone().json(); } catch (e) {}
             if (!res.ok && localDown(data) && await wakeModel(onStatus)) {
@@ -1890,11 +1909,23 @@
         })();
 
         // SMS Dispatcher & Work Mode Functions
+        const redraftTried = new Set();
         async function loadSmsInbox(sync = false) {
             if (sync) await pushAppInbox();
             try {
                 const res = await fetch('/api/sms/inbox' + (sync ? '?sync=true' : ''));
-                const data = await res.json();
+                let data = await res.json();
+                // Texts ingested while the on-device model slept have no draft: wake it and draft them
+                // (once per text per page load), so ingestion needs no model awake in advance.
+                if (sync && Array.isArray(data.messages)) {
+                    const asleep = data.messages.filter(m => m.status === 'NoModel' && asleepErr(m.draft_error) && !redraftTried.has(m.id));
+                    if (asleep.length) {
+                        asleep.forEach(m => redraftTried.add(m.id));
+                        let any = false;
+                        for (const m of asleep) { const r = await redraftIfAsleep(m); any = any || r.status !== 'NoModel'; }
+                        if (any) data = await (await fetch('/api/sms/inbox')).json();
+                    }
+                }
                 
                 // Update toggles
                 if (data.work_config) {
@@ -2019,6 +2050,10 @@
                     body: JSON.stringify({ id, action })
                 });
                 const data = await res.json();
+                if (action === 'regenerate' && data.message) {
+                    const draftEl = document.getElementById('draft-text-' + id);
+                    await redraftIfAsleep(data.message, t => { if (draftEl) draftEl.innerText = t; });
+                }
                 if (data.composer) {
                     if (!(await openComposer(id, data.composer))) alert('Could not open the SMS composer');
                 } else if (data.dispatch_result) {
@@ -2044,12 +2079,14 @@
             statusEl.innerText = "Drafting...";
             statusEl.style.color = "var(--accent)";
             try {
+                const say = t => { statusEl.innerText = t; };
                 const res = await modelFetch('/api/sms/incoming', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ sender, body })
-                }, t => { statusEl.innerText = t; });
+                }, say, false, false);
                 const data = await res.json();
+                data.message = await redraftIfAsleep(data.message, say);
                 if (data.message.status === 'NoModel') {
                     statusEl.innerText = 'No draft: ' + (data.message.draft_error || 'no model endpoint answered');
                     statusEl.style.color = "var(--rose)";
@@ -2073,12 +2110,14 @@
             statusEl.innerText = "Opening the phone SMS composer...";
             statusEl.style.color = "var(--gold)";
             try {
+                const say = t => { statusEl.innerText = t; };
                 const res = await modelFetch('/api/sms/incoming', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ sender, body })
-                }, t => { statusEl.innerText = t; });
+                }, say, false, false);
                 const data = await res.json();
+                if (data.message) data.message = await redraftIfAsleep(data.message, say);
                 if (data.message && data.message.id) {
                     const actRes = await fetch('/api/sms/action', {
                         method: 'POST',
@@ -2218,7 +2257,8 @@
             const up = mk('👍', () => rate(1, up)), down = mk('👎', () => rate(-1, down));
             const retry = mk('↻ Retry', async () => {
                 el.innerText = chatVoice().plain ? 'Working...' : 'Mack is trying again...';
-                const res = await fetch('/api/agent/sessions/' + r.session_id + '/retry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(chatVoice()) });
+                // Retry cuts the earlier answer before it generates: wake the model first, never replay it.
+                const res = await modelFetch('/api/agent/sessions/' + r.session_id + '/retry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(chatVoice()) }, t => { el.innerText = t; }, false, false);
                 const data = await res.json();
                 if (!res.ok || data.ok === false) { el.innerText = 'Retry failed (' + res.status + '): ' + (data.error || res.statusText); el.style.borderColor = 'var(--rose)'; }
                 else renderAgentReply(el, data.result);
@@ -2259,7 +2299,7 @@
                         mackMsg.innerText = data.response + `\n\n[${data.model_used} • ${data.duration_ms}ms]`;
                     }
                 } else {
-                    const res = await modelFetch('/api/agent/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: p, session_id: chatSession, theme: voice.theme, plain: voice.plain }) }, say);
+                    const res = await modelFetch('/api/agent/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: p, session_id: chatSession, theme: voice.theme, plain: voice.plain }) }, say, false, false);
                     const data = await res.json();
                     if (!res.ok || data.ok === false) {
                         mackMsg.innerText = 'No model answered (' + res.status + '): ' + (data.error || res.statusText) + (data.attempts && data.attempts.length ? '\n' + data.attempts.join('\n') : '');
