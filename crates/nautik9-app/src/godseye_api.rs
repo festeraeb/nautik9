@@ -246,6 +246,11 @@ mod tests {
         routes().with_state(state).layer(Extension(Runtime { config_dir: dir.to_path_buf(), secret: "t".into() }))
     }
     async fn call(a: &Router, m: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+        let _flags = crate::NET_FLAGS.read().await;
+        call_raw(a, m, uri, body).await
+    }
+    /// For the tests that flip the network flags (they hold crate::NET_FLAGS for writing).
+    async fn call_raw(a: &Router, m: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
         let b = Request::builder().method(m).uri(uri);
         let req = match body { Some(j) => b.header("content-type", "application/json").body(Body::from(j.to_string())).unwrap(), None => b.body(Body::empty()).unwrap() };
         let r = a.clone().oneshot(req).await.unwrap();
@@ -322,9 +327,11 @@ mod tests {
         assert_eq!(s, StatusCode::BAD_REQUEST);
         assert!(st["globe_url"].as_str().unwrap().ends_with("/globe"));
         let b = app(tempfile::tempdir().unwrap().path());
+        let flags = crate::NET_FLAGS.write().await;
         nautik9_lemonade::set_tailscale(false);
-        let (_, st) = call(&b, "GET", "/api/godseye/status", None).await;
+        let (_, st) = call_raw(&b, "GET", "/api/godseye/status", None).await;
         nautik9_lemonade::set_tailscale(true);
+        drop(flags);
         assert!(st["track"]["kind"] == "no_tailscale" && st["stream"]["kind"] == "no_tailscale", "{st}");
     }
 }

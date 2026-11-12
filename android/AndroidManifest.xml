@@ -19,6 +19,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Remote care: start again after a reboot or an app update when the switch is on. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Remote care: install an update the home fleet pushed. Android still shows its own
+         confirmation, and only accepts an APK signed with this app's key. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:label="NautiK9"
@@ -43,8 +48,21 @@
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Local AI server and on-device model that answer the app's own page" />
+                android:value="Local AI server and on-device model that answer the app's own page, and, with remote care on, the owner's home fleet over Tailscale" />
         </service>
+        <!-- Exported for the system's protected broadcasts (no other app may send these actions). -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+        <!-- The installer's result for an update (reached only through this app's PendingIntent). -->
+        <receiver
+            android:name=".InstallResult"
+            android:exported="false" />
     </application>
 
     <queries>

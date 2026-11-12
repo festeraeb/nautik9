@@ -13,6 +13,7 @@ use nautik9_fleet::{FleetConfig, FleetModule};
 use nautik9_lemonade::{LemonadeConfig, LemonadeModule};
 use nautik9_wayfinder::{WayfinderModule, WayfinderVault};
 
+mod admin_api;
 mod agent_api;
 mod apps_api;
 mod buzz_api;
@@ -23,6 +24,7 @@ mod auth;
 mod device_sms;
 mod notes_api;
 mod static_assets;
+mod source_gate;
 mod tls;
 mod bridges_glue;
 mod tts;
@@ -105,6 +107,14 @@ enum Commands {
         /// Private key (PEM) for --tls-cert
         #[arg(long)]
         tls_key: Option<PathBuf>,
+        /// Which peers may connect at all, before the token is checked: any of loopback, tailnet
+        /// (100.64.0.0/10, fd7a:115c:a1e0::/48; only while remote care is switched on), lan
+        /// (RFC1918, fe80::/10, fc00::/7). Everything else gets 403. Comma separated.
+        #[arg(long, value_enum, value_delimiter = ',', default_value = "loopback")]
+        allow_from: Vec<source_gate::Class>,
+        /// Where a pushed app update is downloaded (default <config dir>/../update)
+        #[arg(long)]
+        update_dir: Option<PathBuf>,
     },
 }
 
@@ -281,9 +291,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Interactive => {
             println!("Interactive mode: Mack is on watch. Type your request or 'exit'.");
         }
-        Commands::Serve { port, bind, fleet_url, print_token, sms_bridge, tls, tls_cert, tls_key } => {
+        Commands::Serve { port, bind, fleet_url, print_token, sms_bridge, tls, tls_cert, tls_key, allow_from, update_dir } => {
             let tls = (tls || tls_cert.is_some() || tls_key.is_some()).then_some((tls_cert, tls_key));
-            let opts = ServeOptions { port, bind, fleet_url, print_token, config_dir, lemonade_config, sms_bridge, tls };
+            let opts = ServeOptions { port, bind, fleet_url, print_token, config_dir, lemonade_config, sms_bridge, tls, allow_from, update_dir };
             serve_mobile_web(opts, registry, cli.vault_path).await?;
             return Ok(());
         }
@@ -309,7 +319,14 @@ struct AppState {
     agent: Result<std::sync::Arc<nautik9_agent::Agent>, String>,
     /// Runs schedules, `Jade/crontab` and the heartbeat (None when the agent is unavailable).
     scheduler: Option<std::sync::Arc<nautik9_agent::schedule::Runner>>,
+    /// Remote care switch, source gate, pending device actions (admin_api.rs).
+    admin: admin_api::Admin,
 }
+
+/// Tests that flip the process-wide online/Tailscale flags hold this for writing; tests whose
+/// answers depend on those flags hold it for reading, so a flip never leaks into another test.
+#[cfg(test)]
+pub(crate) static NET_FLAGS: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
 
 #[cfg(test)]
 impl AppState {
@@ -327,6 +344,7 @@ impl AppState {
             sms_bridge: SmsBridge::App,
             agent: Err("test state".into()),
             scheduler: None,
+            admin: admin_api::Admin::for_test(dir),
         }
     }
 }
@@ -341,10 +359,13 @@ struct ServeOptions {
     sms_bridge: SmsBridge,
     /// HTTPS: Some((cert, key)) paths, both None = the config dir's self-signed pair.
     tls: Option<(Option<PathBuf>, Option<PathBuf>)>,
+    allow_from: Vec<source_gate::Class>,
+    update_dir: Option<PathBuf>,
 }
 
 fn build_router(state: AppState, token: String) -> axum::Router {
     use axum::{routing::{get, post}, Router};
+    let gate = state.admin.gate.clone();
     Router::new()
         .route("/", get(handle_index))
         .route("/assets/mack.jpg", get(handle_asset_mack))
@@ -407,11 +428,14 @@ fn build_router(state: AppState, token: String) -> axum::Router {
         .merge(apps_api::routes())
         .merge(buzz_api::routes())
         .merge(godseye_api::routes())
+        .merge(admin_api::routes())
         .merge(tts::routes())
         .layer(axum::middleware::from_fn_with_state(
             std::sync::Arc::new(token),
             auth::require_token,
         ))
+        // Added last, so it runs first: a peer outside the allowed classes never reaches the token check.
+        .layer(axum::middleware::from_fn_with_state(gate, source_gate::gate))
         .with_state(state)
 }
 
@@ -559,6 +583,7 @@ async fn serve_mobile_web(
         lemonade,
         fleet_url: opts.fleet_url.clone(),
         sms_bridge: opts.sms_bridge,
+        admin: admin_api::Admin::new(&opts.config_dir, opts.update_dir.clone(), opts.port, opts.allow_from.clone()),
     };
     match &state.agent {
         Ok(_) => println!("Agent: ready (sessions in {})", opts.config_dir.join("sessions.db").display()),
@@ -579,6 +604,8 @@ async fn serve_mobile_web(
     } {
         println!("Bridges: {n}");
     }
+    admin_api::clean_update_dir(&state.admin.update_dir);
+    let state_remote_care = state.admin.remote_care().enabled;
     let app = build_router(state, token.clone()).layer(axum::Extension(webxdc_api::Runtime { config_dir: opts.config_dir.clone(), secret: token.clone() }));
 
     let addr = format!("{}:{}", opts.bind, opts.port);
@@ -595,9 +622,15 @@ async fn serve_mobile_web(
     println!("=======================================================");
     println!("NautiK9 companion server listening on {}", addr);
     println!("  Local:  {scheme}://127.0.0.1:{}", opts.port);
-    let lan = if opts.bind == "0.0.0.0" { lan_ip() } else { None };
+    let lan_allowed = opts.allow_from.contains(&source_gate::Class::Lan);
+    let lan = if opts.bind == "0.0.0.0" && lan_allowed { lan_ip() } else { None };
     if let Some(ip) = &lan {
         println!("  LAN:    {scheme}://{}:{}", ip, opts.port);
+    }
+    let names: Vec<String> = opts.allow_from.iter().map(|c| format!("{c:?}").to_lowercase()).collect();
+    println!("  Allowed sources: {} (everything else gets 403)", names.join(", "));
+    if opts.allow_from.contains(&source_gate::Class::Tailnet) {
+        println!("  Remote care: {} (tailnet sources answered only while it is on; /api/health always)", if state_remote_care { "on" } else { "off" });
     }
     println!("  Token:  {} ({})", opts.config_dir.join("token").display(), if token_created { "created now" } else { "existing" });
     if opts.print_token || std::io::IsTerminal::is_terminal(&std::io::stdout()) {
@@ -619,7 +652,8 @@ async fn serve_mobile_web(
 
     match tls_files {
         Some(f) => tls::serve(listener.into_std()?, app, &f).await?,
-        None => axum::serve(listener, app).await?,
+        // The peer address reaches the source gate through ConnectInfo.
+        None => axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await?,
     }
     Ok(())
 }
@@ -1277,9 +1311,10 @@ mod tests {
             sms_bridge,
             agent: agent_api::build_agent(dir, &dir.join("vault.db"), std::sync::Arc::new(dead_lemonade()), Default::default()),
             scheduler: None,
+            admin: admin_api::Admin::for_test(dir),
         };
         let state = AppState { scheduler: state.agent.as_ref().ok().map(|a| nautik9_agent::schedule::Runner::new(a.clone(), 0)), ..state };
-        build_router(state, TOKEN.to_string())
+        build_router(state, TOKEN.to_string()).layer(source_gate::loopback_peer())
     }
 
     async fn call(app: &axum::Router, method: &str, uri: &str, bearer: Option<&str>, body: Option<serde_json::Value>) -> (StatusCode, serde_json::Value) {

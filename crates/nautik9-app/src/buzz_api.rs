@@ -467,6 +467,11 @@ mod tests {
         routes().with_state(state).layer(Extension(Runtime { config_dir: dir.to_path_buf(), secret: TOKEN.into() }))
     }
     async fn call(a: &Router, m: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+        let _flags = crate::NET_FLAGS.read().await;
+        call_raw(a, m, uri, body).await
+    }
+    /// For the tests that flip the network flags (they hold crate::NET_FLAGS for writing).
+    async fn call_raw(a: &Router, m: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
         let b = Request::builder().method(m).uri(uri);
         let req = match body { Some(j) => b.header("content-type", "application/json").body(Body::from(j.to_string())).unwrap(), None => b.body(Body::empty()).unwrap() };
         let r = a.clone().oneshot(req).await.unwrap();
@@ -552,18 +557,22 @@ mod tests {
         let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let d = tempfile::tempdir().unwrap();
         let a = app(d.path(), "http://100.64.1.2:9122");
+        let flags = crate::NET_FLAGS.write().await;
         nautik9_lemonade::set_tailscale(false);
         let t = std::time::Instant::now();
-        let (s, v) = call(&a, "GET", "/api/buzz/rooms", None).await;
+        let (s, v) = call_raw(&a, "GET", "/api/buzz/rooms", None).await;
         nautik9_lemonade::set_tailscale(true);
+        drop(flags);
         assert!(s == StatusCode::SERVICE_UNAVAILABLE && v["kind"] == "no_tailscale", "{v}");
         assert!(t.elapsed().as_millis() < 500, "no connect attempt was made");
         // derived address: same host as the fleet, port 5561
         let (_, g) = call(&a, "GET", "/api/buzz/settings", None).await;
         assert_eq!(g["buzz_url"], "http://100.64.1.2:5561");
+        let flags = crate::NET_FLAGS.write().await;
         nautik9_lemonade::set_online(false);
-        let (_, v) = call(&a, "GET", "/api/buzz/rooms", None).await;
+        let (_, v) = call_raw(&a, "GET", "/api/buzz/rooms", None).await;
         nautik9_lemonade::set_online(true);
+        drop(flags);
         assert_eq!(v["kind"], "offline");
     }
 }
