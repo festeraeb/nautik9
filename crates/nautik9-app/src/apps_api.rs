@@ -94,10 +94,16 @@ async fn wayfinder_invoke(State(st): State<AppState>, Json(p): Json<Value>) -> R
     }
 }
 
+/// The endpoint a setup check with no `base` looks at: the first remote provider, else (the phone's
+/// generated providers.json holds only an `offline: true` on-device entry) the first provider.
+fn setup_provider(providers: &[nautik9_lemonade::Provider]) -> Option<&nautik9_lemonade::Provider> {
+    providers.iter().find(|p| !p.offline).or_else(|| providers.first())
+}
+
 /// Same report shape as Wayfinder's desktop `check_lemonade_setup`, from real requests only.
 async fn check_setup(st: &AppState, base: Option<String>, chat_model: Option<String>, embed_model: Option<String>) -> Value {
     let providers = &st.lemonade.config.providers;
-    let prov = providers.iter().find(|p| !p.offline);
+    let prov = setup_provider(providers);
     let base_url = match (&base, prov) {
         (Some(b), _) => v1_base(b),
         (None, Some(p)) => p.base_url.trim_end_matches('/').to_string(),
@@ -223,6 +229,13 @@ mod tests {
         assert_eq!(v1_base("http://127.0.0.1:13305/api"), "http://127.0.0.1:13305/api/v1");
         assert_eq!(v1_base("http://h:1/v1/"), "http://h:1/v1");
         assert_eq!(v1_base("http://h:1"), "http://h:1/v1");
+    }
+    #[test]
+    fn setup_check_falls_back_to_the_on_device_endpoint() {
+        let p = |name: &str, offline: bool| nautik9_lemonade::Provider { name: name.into(), base_url: format!("http://127.0.0.1:1/{name}/v1"), model: None, api_key: None, offline, headers: None };
+        assert_eq!(setup_provider(&[p("local", true)]).unwrap().name, "local", "phone default: only an on-device entry");
+        assert_eq!(setup_provider(&[p("local", true), p("home", false)]).unwrap().name, "home", "a remote provider still wins");
+        assert!(setup_provider(&[]).is_none());
     }
     #[test]
     fn themes_are_a_closed_set() {
