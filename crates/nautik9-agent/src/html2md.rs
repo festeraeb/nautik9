@@ -5,6 +5,9 @@
 /// Elements whose whole content is dropped.
 const SKIP: &[&str] = &["script", "style", "noscript", "nav", "header", "footer", "aside", "svg", "form", "iframe", "template", "button", "select"];
 
+/// Elements that have no closing tag in HTML.
+const VOID: &[&str] = &["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"];
+
 fn decode_entities(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
@@ -68,7 +71,8 @@ fn attr(tag: &str, name: &str) -> Option<String> {
 pub fn html_to_markdown(html: &str, base: &str) -> (Option<String>, String) {
     let mut out = String::new();
     let mut title: Option<String> = None;
-    let mut skip_depth: Vec<String> = Vec::new();
+    // Open skipped elements: (name, same-name elements opened inside it and not yet closed).
+    let mut skip_depth: Vec<(String, usize)> = Vec::new();
     let mut in_pre = false;
     let mut in_title = false;
     let mut link: Option<String> = None;
@@ -98,18 +102,30 @@ pub fn html_to_markdown(html: &str, base: &str) -> (Option<String>, String) {
             i += e + 1;
             let closing = tag.starts_with('/');
             let name = tag.trim_start_matches('/').split(|c: char| c.is_whitespace() || c == '/').next().unwrap_or("").to_ascii_lowercase();
-            if let Some(top) = skip_depth.last() {
+            let void = VOID.contains(&name.as_str()) || tag.ends_with('/');
+            if let Some((top, nested)) = skip_depth.last_mut() {
                 if closing && &name == top {
-                    skip_depth.pop();
-                } else if !closing && SKIP.contains(&name.as_str()) && !tag.ends_with('/') {
-                    skip_depth.push(name);
+                    if *nested > 0 {
+                        *nested -= 1;
+                    } else {
+                        skip_depth.pop();
+                    }
+                } else if !closing && !void && &name == top {
+                    // `<div hidden><div>inner</div>hidden text</div>`: the inner </div> is not the end.
+                    *nested += 1;
+                } else if !closing && !void && SKIP.contains(&name.as_str()) {
+                    skip_depth.push((name, 0));
                 }
                 continue;
             }
             let bare_hidden = tag.split_whitespace().skip(1).any(|t| t.trim_end_matches('/').eq_ignore_ascii_case("hidden"));
             let hidden = !closing && (bare_hidden || attr(tag, "hidden").is_some() || attr(tag, "aria-hidden").is_some_and(|v| v == "true") || attr(tag, "style").is_some_and(|s| s.replace(' ', "").contains("display:none")));
             if !closing && (SKIP.contains(&name.as_str()) || hidden) && !tag.ends_with('/') {
-                skip_depth.push(name);
+                // A hidden void element (<img hidden>, <input hidden>) is dropped by itself: it never
+                // gets a closing tag, so opening a skip region would swallow the rest of the page.
+                if !void {
+                    skip_depth.push((name, 0));
+                }
                 continue;
             }
             match (name.as_str(), closing) {
@@ -271,6 +287,20 @@ mod tests {
         for gone in ["menu", "alert", "secret", "p{}"] {
             assert!(!md.contains(gone), "{gone} leaked: {md}");
         }
+    }
+
+    #[test]
+    fn hidden_regions_end_at_their_own_closing_tag() {
+        let (_, md) = html_to_markdown("<p>before</p><div hidden><div>inner</div>hidden text</div><p>after</p>", "");
+        assert!(md.contains("before") && md.contains("after"), "{md}");
+        assert!(!md.contains("inner") && !md.contains("hidden text"), "{md}");
+    }
+
+    #[test]
+    fn hidden_void_elements_do_not_swallow_the_page() {
+        let (_, md) = html_to_markdown(r#"<p>one</p><img hidden alt="secret pic"><input hidden value="x"><p>two</p><img src="a.png" alt="visible" aria-hidden="true"><p>three</p>"#, "");
+        assert!(md.contains("one") && md.contains("two") && md.contains("three"), "{md}");
+        assert!(!md.contains("secret pic") && !md.contains("visible"), "{md}");
     }
 
     #[test]
